@@ -1079,7 +1079,7 @@ i.page-break,
 
 .editor-shell .editor-image img {
   max-width: 100%;
-  cursor: default;
+  cursor: zoom-in;
 }
 
 .editor-shell .editor-image img.focused {
@@ -1093,6 +1093,31 @@ i.page-break,
 
 .editor-shell .editor-image img.focused.draggable:active {
   cursor: grabbing;
+}
+
+.editor-shell .editor-image .image-window-preview {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.86);
+  border: 0;
+  cursor: zoom-out;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  margin: 0;
+  padding: 24px;
+  position: fixed;
+  z-index: 10000;
+}
+
+.editor-shell .editor-image .image-window-preview img {
+  border-radius: 4px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  cursor: zoom-out;
+  height: auto;
+  max-height: calc(100vh - 48px);
+  max-width: calc(100vw - 48px);
+  object-fit: contain;
+  width: auto;
 }
 
 .editor-shell .editor-image .image-caption-container .tree-view-output {

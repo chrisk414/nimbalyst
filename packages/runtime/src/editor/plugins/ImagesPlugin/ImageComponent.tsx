@@ -260,6 +260,8 @@ export default function ImageComponent({
   const isEditable = useLexicalEditable();
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
   const [containerMounted, setContainerMounted] = useState(false);
+  const [isExpandedToWindow, setIsExpandedToWindow] =
+    useState<boolean>(false);
 
   // Callback ref to detect when container is mounted
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
@@ -269,9 +271,10 @@ export default function ImageComponent({
     }
   }, []);
 
-  // Reset load error when src changes
+  // Reset image-local UI state when src changes
   useEffect(() => {
     setIsLoadError(false);
+    setIsExpandedToWindow(false);
   }, [src]);
 
   // Resolve image paths to renderer-loadable URLs.
@@ -444,6 +447,7 @@ export default function ImageComponent({
         } else {
           clearSelection();
           setSelected(true);
+          setIsExpandedToWindow((current) => !current);
         }
         return true;
       }
@@ -452,6 +456,10 @@ export default function ImageComponent({
     },
     [isResizing, isSelected, setSelected, clearSelection],
   );
+
+  const closeExpandedPreview = useCallback(() => {
+    setIsExpandedToWindow(false);
+  }, []);
 
   const onDoubleClick = useCallback(
     (event: MouseEvent) => {
@@ -574,6 +582,24 @@ export default function ImageComponent({
     resolvedSrc,
   ]);
 
+  useEffect(() => {
+    if (!isExpandedToWindow) {
+      return;
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeExpandedPreview();
+      }
+    };
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [closeExpandedPreview, isExpandedToWindow]);
+
   const setShowCaption = () => {
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
@@ -636,6 +662,17 @@ export default function ImageComponent({
                 />
               )}
             </div>
+
+            {isExpandedToWindow && resolvedSrc && !isLoadError && (
+              <button
+                aria-label="Close image preview"
+                className="image-window-preview"
+                onClick={closeExpandedPreview}
+                type="button"
+              >
+                <img src={resolvedSrc} alt={altText} draggable="false" />
+              </button>
+            )}
 
             {showCaption && (
               <div className="image-caption-container">
