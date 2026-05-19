@@ -213,6 +213,16 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
     },
   ];
 
+  // Content mode buttons - docs section
+  const contentModeButtonsDocs: NavButton[] = [
+    {
+      id: 'docs-mode',
+      icon: 'menu_book',
+      label: 'MkDocs',
+      contentMode: 'docs',
+    },
+  ];
+
   // Content mode buttons - collab section
   const contentModeButtonsCollab: NavButton[] = [
     {
@@ -414,6 +424,34 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           })}
         </div>
       )}
+
+      {/* Content Mode Switcher - Docs Group */}
+      <div className="nav-section nav-content-modes flex flex-col items-center gap-1 w-full px-1.5 py-1">
+        {contentModeButtonsDocs.map((button) => {
+          const testId = `${button.id}-button`;
+          return (
+            <HelpTooltip key={button.id} testId={testId} placement="right">
+              <button
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                onClick={() => {
+                  // Clear any active fullscreen extension panel when switching to a content mode
+                  onExtensionPanelChange?.(null);
+                  handleButtonClick(button);
+                }}
+                aria-pressed={contentMode === button.contentMode && !activeExtensionPanel}
+                data-mode={button.contentMode || button.id}
+                data-testid={testId}
+              >
+                <MaterialSymbol
+                  icon={button.icon}
+                  size={20}
+                  fill={contentMode === button.contentMode && !activeExtensionPanel}
+                />
+              </button>
+            </HelpTooltip>
+          );
+        })}
+      </div>
 
       {/* Content Mode Switcher - Collab Group (Shared Docs) - only shown when workspace has a team */}
       {hasTeam && (

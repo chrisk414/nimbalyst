@@ -25,6 +25,7 @@ import { registerHistoryHandlers } from './ipc/HistoryHandlers';
 import { registerSessionHandlers } from './ipc/SessionHandlers';
 import { registerSessionStateHandlers, shutdownSessionStateHandlers, hasActiveStreamingSessions } from './ipc/SessionStateHandlers';
 import { registerAttachmentHandlers } from './ipc/AttachmentHandlers';
+import { registerMkDocsHandlers, shutdownMkDocsServers } from './ipc/MkDocsHandlers';
 import { registerThemeHandlers } from './ipc/ThemeHandlers';
 import { registerWorkspaceWatcherHandlers } from './file/WorkspaceWatcher';
 import { setupSessionFileHandlers } from './ipc/SessionFileHandlers';
@@ -1483,6 +1484,7 @@ app.whenReady().then(async () => {
     registerActionPromptHandlers();
     await registerUsageAnalyticsHandlers();
     registerAttachmentHandlers();
+    registerMkDocsHandlers();
     registerProjectSelectionHandlers();
     registerMultiProjectRailHandlers();
     registerClaudeCodeHandlers();
@@ -2864,6 +2866,9 @@ app.on('before-quit', async (event) => {
         // Shutdown terminal sessions
         await shutdownTerminalHandlers();
         console.log(`[QUIT] Terminal sessions shutdown`);
+
+        shutdownMkDocsServers();
+        console.log(`[QUIT] MkDocs servers shutdown`);
 
         // Tear down the codex auth app-server child if it was lazily started.
         try {

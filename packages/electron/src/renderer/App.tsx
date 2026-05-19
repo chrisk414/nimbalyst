@@ -125,6 +125,7 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { DocsMode } from './components/DocsMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
 import {
@@ -2303,6 +2304,22 @@ export default function App() {
                   workspacePath={workspacePath}
                   isActive={activeMode === 'collab'}
                   onFileOpen={handleWorkspaceFileSelect}
+                />
+              )}
+            </div>
+
+            {/* Docs Mode - always mounted, visibility controlled by display */}
+            <div
+              data-layout="docs-mode-wrapper"
+              className={`flex-1 flex-col overflow-hidden min-h-0 ${
+                activeMode === 'docs' && !isFullscreenPanelActive ? 'flex' : 'hidden'
+              }`}
+            >
+              {workspacePath && (
+                <DocsMode
+                  workspacePath={workspacePath}
+                  workspaceName={workspaceName || ''}
+                  isActive={activeMode === 'docs'}
                 />
               )}
             </div>

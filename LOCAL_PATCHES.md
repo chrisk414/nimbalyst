@@ -44,3 +44,15 @@ Keep each customization in its own commit when practical so upstream updates can
 - Purpose: let screenshots and other content images expand to a Nim-window-sized preview without changing the document image dimensions.
 - Behavior: clicking a content image opens a centered window overlay; clicking the overlay image again or pressing Escape returns to the normal content view.
 - Verification: open a tracker item with a screenshot in Content view, click the screenshot, confirm it fills the Nim window, then click it again to close.
+
+### Add MkDocs Mode To Left Bar
+
+- Date added: 2026-05-19
+- Commit: `Add MkDocs mode to left bar`
+- File: `packages/electron/src/main/ipc/MkDocsHandlers.ts`
+- File: `packages/electron/src/renderer/components/DocsMode/DocsMode.tsx`
+- File: `packages/electron/src/renderer/components/NavigationGutter/NavigationGutter.tsx`
+- File: `packages/electron/src/renderer/App.tsx`
+- Purpose: open the workspace MkDocs browser inside Nim so VTU `Doc/GDD` can be read without a separate browser window.
+- Behavior: the left bar has a MkDocs button. For workspaces with `mkdocs.yml` and `tools/gdd-docs.ps1`, Nim starts or reuses `http://127.0.0.1:8000/` and embeds it in a Docs mode iframe. Workspaces without that setup show an unavailable state.
+- Verification: open VTU in Nim, click the MkDocs left-bar icon, confirm the Docs mode iframe renders the local MkDocs site, and use refresh/open-in-browser controls as needed.
