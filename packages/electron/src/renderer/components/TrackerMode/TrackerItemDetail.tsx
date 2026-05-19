@@ -431,6 +431,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Rich content editor state
   const [contentMarkdown, setContentMarkdown] = useState<string | null>(null);
   const [contentLoaded, setContentLoaded] = useState(false);
+  const [isContentFullscreen, setIsContentFullscreen] = useState(false);
   // Bumped when an external writer (MCP, sync) changes the body content
   // out from under us, so the Lexical editor remounts with the new value.
   // Lexical only consumes `initialContent` at mount, so a key change is
@@ -459,6 +460,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     setLocalTitle(getRecordTitle(item));
     setLocalDescription(item.fields.description as string ?? '');
     setLocalCustomFields({});
+    setIsContentFullscreen(false);
     // Clear any stale per-field debounce timers from the previous item and seed
     // the reconciliation baseline with the new item's persisted fields.
     for (const timer of fieldSaveTimersRef.current.values()) clearTimeout(timer);
@@ -576,11 +578,18 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Escape to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (isContentFullscreen) {
+          e.preventDefault();
+          setIsContentFullscreen(false);
+        } else {
+          onClose();
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [isContentFullscreen, onClose]);
 
   const syncMode = useMemo(() => {
     const tracker = globalRegistry.get(item?.primaryType ?? '');
@@ -841,6 +850,40 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }, 800);
   }, [item?.id]);
 
+  const flushLiveContentBeforeLayoutChange = useCallback(() => {
+    if (!item || !getContentFnRef.current) return;
+
+    const markdown = getContentFnRef.current();
+    if (contentMode === 'collaborative') {
+      const baseline = loadedBaselineRef.current;
+      if (markdown.trim() === '' && baseline != null && baseline.trim() !== '') {
+        return;
+      }
+    }
+
+    if (contentSaveTimerRef.current) {
+      clearTimeout(contentSaveTimerRef.current);
+      contentSaveTimerRef.current = null;
+    }
+
+    loadedBaselineRef.current = markdown;
+    setContentMarkdown(markdown);
+    contentSaveInFlightRef.current = true;
+    window.electronAPI.documentService.updateTrackerItemContent({
+      itemId: item.id,
+      content: markdown,
+    }).catch((err) => {
+      console.error('[TrackerItemDetail] Failed to save content before fullscreen toggle:', err);
+    }).finally(() => {
+      contentSaveInFlightRef.current = false;
+    });
+  }, [contentMode, item?.id]);
+
+  const handleToggleContentFullscreen = useCallback(() => {
+    flushLiveContentBeforeLayoutChange();
+    setIsContentFullscreen((value) => !value);
+  }, [flushLiveContentBeforeLayoutChange]);
+
   // Cleanup timers
   useEffect(() => {
     const timers = fieldSaveTimersRef.current;
@@ -1100,12 +1143,104 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   }
 
   const sourceLabel = getSourceLabel(item);
+  const canToggleContentFullscreen = contentMode === 'local-pglite' || contentMode === 'collaborative';
+  const contentEditorFrameClass = (fullscreen: boolean, isCollaborative = false) => {
+    const heightClass = fullscreen ? 'h-full min-h-0' : 'min-h-[200px]';
+    const positionClass = isCollaborative ? 'relative' : '';
+    return `tracker-content-editor ${positionClass} border border-nim rounded bg-nim ${heightClass} overflow-hidden`;
+  };
+
+  const renderContentEditor = (fullscreen: boolean) => {
+    if (contentMode === 'local-pglite' && localEditorConfig) {
+      return (
+        <div
+          className={contentEditorFrameClass(fullscreen)}
+          data-testid={fullscreen ? 'tracker-detail-content-editor-fullscreen' : 'tracker-detail-content-editor'}
+        >
+          <NimbalystEditor key={`${item.id}-${externalContentEpoch}-${fullscreen ? 'fullscreen' : 'panel'}`} config={localEditorConfig} />
+        </div>
+      );
+    }
+
+    if (contentMode === 'collaborative' && collabEditorConfig) {
+      return (
+        <div
+          className={contentEditorFrameClass(fullscreen, true)}
+          data-testid={fullscreen ? 'tracker-detail-content-editor-fullscreen' : 'tracker-detail-content-editor'}
+        >
+          {!hasSyncedOnce && (
+            <div
+              className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none bg-nim"
+              data-testid="tracker-content-loading"
+            >
+              <span className="text-sm text-nim-muted">Loading content...</span>
+            </div>
+          )}
+          {reviewState?.hasUnreviewed && (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 text-xs border-b border-nim bg-nim-tertiary"
+              data-testid="tracker-content-review-banner"
+            >
+              <MaterialSymbol icon="rate_review" size={14} className="text-nim-warning" />
+              <span className="flex-1 text-nim-muted">
+                {reviewState.unreviewedCount} pending change{reviewState.unreviewedCount !== 1 ? 's' : ''} from{' '}
+                {reviewState.unreviewedAuthors.length > 0
+                  ? reviewState.unreviewedAuthors.join(', ')
+                  : 'collaborators'}
+              </span>
+              <button
+                className="px-2 py-0.5 rounded text-[11px] font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                onClick={acceptRemoteChanges}
+              >
+                Accept
+              </button>
+              <button
+                className="px-2 py-0.5 rounded text-[11px] font-medium text-nim-muted hover:text-nim hover:bg-nim-tertiary border border-nim transition-colors"
+                onClick={rejectRemoteChanges}
+              >
+                Reject
+              </button>
+            </div>
+          )}
+          <NimbalystEditor key={`collab-${item.id}-${providerEpoch}-${fullscreen ? 'fullscreen' : 'panel'}`} config={collabEditorConfig} />
+        </div>
+      );
+    }
+
+    if ((contentMode === 'local-pglite' || contentMode === 'collaborative') && !contentLoaded) {
+      return <div className="text-sm text-nim-faint py-4 text-center">Loading...</div>;
+    }
+
+    if (contentMode === 'collaborative' && collabLoading) {
+      return <div className="text-sm text-nim-faint py-4 text-center">Connecting...</div>;
+    }
+
+    if (item.system.documentPath) {
+      return (
+        <div className="flex items-center gap-2 py-2">
+          <span className="text-sm text-nim-muted flex-1 truncate font-mono">
+            {item.system.documentPath}
+          </span>
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-nim text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+            onClick={handleOpenDocument}
+          >
+            <MaterialSymbol icon="open_in_new" size={14} />
+            Open in Editor
+          </button>
+        </div>
+      );
+    }
+
+    return <p className="text-sm text-nim-faint m-0">No content</p>;
+  };
 
   return (
-    <div
-      className="tracker-item-detail flex flex-col h-full bg-nim overflow-hidden"
-      data-testid="tracker-item-detail"
-    >
+    <>
+      <div
+        className="tracker-item-detail flex flex-col h-full bg-nim overflow-hidden"
+        data-testid="tracker-item-detail"
+      >
       {/* Header */}
       <div className="flex items-start gap-2 px-4 pt-4 pb-3 border-b border-nim shrink-0">
         <span className="mt-1 shrink-0" style={{ color: typeColor }}>
@@ -1501,76 +1636,28 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
         {/* Rich Content Editor / Description */}
         <div className="pt-1 border-t border-nim">
-          <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px] block mb-1">
-            Content
-          </label>
-          {contentMode === 'local-pglite' && localEditorConfig ? (
-            <div
-              className="tracker-content-editor border border-nim rounded bg-nim min-h-[200px] overflow-hidden"
-              data-testid="tracker-detail-content-editor"
-            >
-              <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
-            </div>
-          ) : contentMode === 'collaborative' && collabEditorConfig ? (
-            <div
-              className="tracker-content-editor relative border border-nim rounded bg-nim min-h-[200px] overflow-hidden"
-              data-testid="tracker-detail-content-editor"
-            >
-              {!hasSyncedOnce && (
-                <div
-                  className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none bg-nim"
-                  data-testid="tracker-content-loading"
-                >
-                  <span className="text-sm text-nim-muted">Loading content...</span>
-                </div>
-              )}
-              {reviewState?.hasUnreviewed && (
-                <div
-                  className="flex items-center gap-2 px-3 py-1.5 text-xs border-b border-nim bg-nim-tertiary"
-                  data-testid="tracker-content-review-banner"
-                >
-                  <MaterialSymbol icon="rate_review" size={14} className="text-nim-warning" />
-                  <span className="flex-1 text-nim-muted">
-                    {reviewState.unreviewedCount} pending change{reviewState.unreviewedCount !== 1 ? 's' : ''} from{' '}
-                    {reviewState.unreviewedAuthors.length > 0
-                      ? reviewState.unreviewedAuthors.join(', ')
-                      : 'collaborators'}
-                  </span>
-                  <button
-                    className="px-2 py-0.5 rounded text-[11px] font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
-                    onClick={acceptRemoteChanges}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    className="px-2 py-0.5 rounded text-[11px] font-medium text-nim-muted hover:text-nim hover:bg-nim-tertiary border border-nim transition-colors"
-                    onClick={rejectRemoteChanges}
-                  >
-                    Reject
-                  </button>
-                </div>
-              )}
-              <NimbalystEditor key={`collab-${item.id}-${providerEpoch}`} config={collabEditorConfig} />
-            </div>
-          ) : (contentMode === 'local-pglite' || contentMode === 'collaborative') && !contentLoaded ? (
-            <div className="text-sm text-nim-faint py-4 text-center">Loading...</div>
-          ) : contentMode === 'collaborative' && collabLoading ? (
-            <div className="text-sm text-nim-faint py-4 text-center">Connecting...</div>
-          ) : item.system.documentPath ? (
-            <div className="flex items-center gap-2 py-2">
-              <span className="text-sm text-nim-muted flex-1 truncate font-mono">
-                {item.system.documentPath}
-              </span>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
+              Card Content
+            </label>
+            {canToggleContentFullscreen && (
               <button
-                className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-nim text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
-                onClick={handleOpenDocument}
+                className="p-1 rounded hover:bg-nim-tertiary text-nim-muted hover:text-nim transition-colors"
+                onClick={handleToggleContentFullscreen}
+                title="View card content fullscreen"
+                aria-label="View card content fullscreen"
+                data-testid="tracker-content-fullscreen-button"
               >
-                <MaterialSymbol icon="open_in_new" size={14} />
-                Open in Editor
+                <MaterialSymbol icon="open_in_full" size={16} />
               </button>
+            )}
+          </div>
+          {isContentFullscreen && canToggleContentFullscreen ? (
+            <div className="rounded border border-nim bg-nim-secondary px-3 py-2 text-xs text-nim-muted">
+              Card content is open fullscreen.
             </div>
           ) : (
-            <p className="text-sm text-nim-faint m-0">No content</p>
+            renderContentEditor(false)
           )}
         </div>
 
@@ -1716,7 +1803,40 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+      {isContentFullscreen && canToggleContentFullscreen && (
+        <div
+          className="fixed inset-0 z-[1000] flex flex-col bg-nim"
+          data-testid="tracker-content-fullscreen-overlay"
+        >
+          <div className="flex items-center gap-3 border-b border-nim px-4 py-3 shrink-0">
+            <span className="shrink-0 text-nim-muted" style={{ color: typeColor }}>
+              <MaterialSymbol icon={icon} size={20} />
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
+                Card Content
+              </span>
+              <span className="truncate text-sm font-semibold text-nim">
+                {getRecordTitle(item)}
+              </span>
+            </div>
+            <button
+              className="p-1.5 rounded hover:bg-nim-tertiary text-nim-muted hover:text-nim transition-colors"
+              onClick={handleToggleContentFullscreen}
+              title="Exit fullscreen"
+              aria-label="Exit card content fullscreen"
+              data-testid="tracker-content-exit-fullscreen-button"
+            >
+              <MaterialSymbol icon="close_fullscreen" size={18} />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 p-3">
+            {renderContentEditor(true)}
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

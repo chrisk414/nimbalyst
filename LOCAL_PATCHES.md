@@ -56,3 +56,12 @@ Keep each customization in its own commit when practical so upstream updates can
 - Purpose: open the workspace MkDocs browser inside Nim so VTU `Doc/GDD` can be read without a separate browser window.
 - Behavior: the left bar has a MkDocs button. For workspaces with `mkdocs.yml` and `tools/gdd-docs.ps1`, Nim starts or reuses `http://127.0.0.1:8000/` and embeds it in a Docs mode iframe. Workspaces without that setup show an unavailable state.
 - Verification: open VTU in Nim, click the MkDocs left-bar icon, confirm the Docs mode iframe renders the local MkDocs site, and use refresh/open-in-browser controls as needed.
+
+### Fullscreen Tracker Card Content
+
+- Date added: 2026-05-19
+- Commit: `Fullscreen tracker card content`
+- File: `packages/electron/src/renderer/components/TrackerMode/TrackerItemDetail.tsx`
+- Purpose: let tracker card content use the full Nim window instead of the narrow detail panel.
+- Behavior: native tracker card detail panels show a fullscreen icon beside `Card Content`. Clicking it opens the content editor in a full-window overlay; clicking the exit icon or pressing Escape returns to the normal detail panel.
+- Verification: open a native tracker card with body content, click the fullscreen icon beside `Card Content`, confirm the content editor fills the Nim window, then exit fullscreen and confirm the card detail remains open.
