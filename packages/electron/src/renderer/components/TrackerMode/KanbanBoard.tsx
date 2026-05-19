@@ -107,6 +107,22 @@ const TYPE_COLORS: Record<string, string> = {
   feature: '#10b981',
 };
 
+const MAX_VISIBLE_CARD_TAGS = 4;
+
+function getRecordTags(record: TrackerRecord): string[] {
+  const rawTags = getFieldByRole(record, 'tags');
+  const tags = Array.isArray(rawTags)
+    ? rawTags
+    : typeof rawTags === 'string'
+      ? rawTags.split(',')
+      : [];
+
+  return Array.from(new Set(
+    tags
+      .map(tag => String(tag).trim())
+      .filter(Boolean)
+  ));
+}
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   filterType,
   searchQuery,
@@ -129,6 +145,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
         record.issueKey?.toLowerCase().includes(q) ||
         String(record.issueNumber ?? '').includes(q) ||
         getRecordTitle(record).toLowerCase().includes(q) ||
+        getRecordTags(record).some(tag => tag.toLowerCase().includes(q)) ||
         record.system.documentPath?.toLowerCase().includes(q)
     );
   }, [searchQuery, overrideItems]);
@@ -610,6 +627,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                   {dragOverColumn === col.value && dropIndex === cardIndex && dragItemId !== item.id && (
                     <div className="h-[2px] bg-[var(--nim-primary)] rounded-full mx-1 my-0.5" />
                   )}
+                {(() => {
+                  const tags = getRecordTags(item);
+                  const visibleTags = tags.slice(0, MAX_VISIBLE_CARD_TAGS);
+                  const hiddenTagCount = Math.max(0, tags.length - visibleTags.length);
+
+                  return (
                 <button
                   data-testid="tracker-kanban-card"
                   data-item-id={item.id}
@@ -690,9 +713,27 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                           ) : null;
                         })()}
                       </div>
+                      {tags.length > 0 && (
+                        <div className="flex gap-1 flex-wrap mt-1.5" title={tags.join(', ')}>
+                          {visibleTags.map(tag => (
+                            <span
+                              key={tag}
+                              data-testid="tracker-kanban-card-tag"
+                              className="max-w-[120px] truncate text-[9px] font-medium px-1.5 py-px rounded bg-white/[0.06] text-nim-muted border border-white/[0.08]"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {hiddenTagCount > 0 && (
+                            <span className="text-[9px] text-nim-faint">+{hiddenTagCount}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </button>
+                  );
+                })()}
                 </React.Fragment>
               ))}
               {/* Drop indicator after last card */}
