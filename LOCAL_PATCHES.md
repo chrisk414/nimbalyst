@@ -65,3 +65,12 @@ Keep each customization in its own commit when practical so upstream updates can
 - Purpose: let tracker card content use the full Nim window instead of the narrow detail panel.
 - Behavior: native tracker card detail panels show a fullscreen icon beside `Card Content`. Clicking it opens the content editor in a full-window overlay; clicking the exit icon or pressing Escape returns to the normal detail panel.
 - Verification: open a native tracker card with body content, click the fullscreen icon beside `Card Content`, confirm the content editor fills the Nim window, then exit fullscreen and confirm the card detail remains open.
+
+### Show Codex Weekly Usage Ring
+
+- Date added: 2026-06-27
+- Commit: `Show Codex weekly usage ring`
+- File: `packages/electron/src/renderer/components/CodexUsageIndicator/CodexUsageIndicator.tsx`
+- Purpose: show both Codex session and weekly usage in the navigation gutter indicator.
+- Behavior: the outer ring shows 5-hour session usage, the inner ring shows 7-day weekly usage, and the tooltip/accessible label includes both percentages and reset times.
+- Verification: open Nim with Codex usage data available and confirm the Codex usage gutter button shows two concentric progress rings; click it to compare with the Session and Weekly rows in the popover.
