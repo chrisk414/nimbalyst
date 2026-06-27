@@ -3,7 +3,7 @@
  *
  * Displays the 5-hour session utilization as the outer circular progress ring
  * and weekly utilization as the inner ring. Clicking opens a popover with full
- * details. Error states render as a blank ("--") indicator with hover details.
+ * details. Error states render muted rings with hover details.
  */
 
 import React, { useState, useRef, useCallback } from 'react';
@@ -21,6 +21,7 @@ import { refreshCodexUsage } from '../../store/listeners/codexUsageListeners';
 
 const OUTER_RING_RADIUS = 12;
 const INNER_RING_RADIUS = 7.25;
+const RING_STROKE_WIDTH = 3;
 const OUTER_RING_CIRCUMFERENCE = 2 * Math.PI * OUTER_RING_RADIUS;
 const INNER_RING_CIRCUMFERENCE = 2 * Math.PI * INNER_RING_RADIUS;
 
@@ -110,7 +111,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
             r={OUTER_RING_RADIUS}
             fill="none"
             className="stroke-nim-tertiary"
-            strokeWidth="3"
+            strokeWidth={RING_STROKE_WIDTH}
           />
           {/* Progress ring */}
           <circle
@@ -119,7 +120,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
             r={OUTER_RING_RADIUS}
             fill="none"
             className={sessionStrokeColor}
-            strokeWidth="3"
+            strokeWidth={RING_STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={OUTER_RING_CIRCUMFERENCE}
             strokeDashoffset={sessionStrokeDashoffset}
@@ -132,7 +133,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
             r={INNER_RING_RADIUS}
             fill="none"
             className="stroke-nim-tertiary"
-            strokeWidth="2"
+            strokeWidth={RING_STROKE_WIDTH}
           />
           {/* Weekly progress ring */}
           <circle
@@ -141,17 +142,13 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
             r={INNER_RING_RADIUS}
             fill="none"
             className={weeklyStrokeColor}
-            strokeWidth="2"
+            strokeWidth={RING_STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={INNER_RING_CIRCUMFERENCE}
             strokeDashoffset={weeklyStrokeDashoffset}
             style={{ transition: 'stroke-dashoffset 0.3s ease' }}
           />
         </svg>
-        {/* Session percentage text. Weekly usage is shown by the inner ring. */}
-        <span className="absolute inset-0 flex items-center justify-center text-[8px] font-semibold leading-none text-nim">
-          {limitsAvailable ? Math.round(sessionUtilization) : '--'}
-        </span>
       </button>
 
       {isPopoverOpen && (
