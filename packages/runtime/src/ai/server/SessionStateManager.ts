@@ -16,6 +16,7 @@ import {
 } from './types/SessionState';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (as specified in requirements)
+const INTERRUPT_SUPPRESSION_MS = 30 * 1000;
 
 // Database interface for direct SQL access
 interface DatabaseWorker {
@@ -26,6 +27,7 @@ export class SessionStateManager extends EventEmitter {
   private activeSessions: Map<string, SessionState> = new Map();
   private database: DatabaseWorker | null = null;
   private activityUpdateTimers: Map<string, NodeJS.Timeout> = new Map();
+  private recentlyInterruptedSessions: Map<string, number> = new Map();
 
   constructor() {
     super();
@@ -71,6 +73,7 @@ export class SessionStateManager extends EventEmitter {
    */
   async startSession(options: StartSessionOptions): Promise<void> {
     const { sessionId, workspacePath, initialStatus = 'running' } = options;
+    this.recentlyInterruptedSessions.delete(sessionId);
 
     const state: SessionState = {
       sessionId,
@@ -102,6 +105,9 @@ export class SessionStateManager extends EventEmitter {
 
     const state = this.activeSessions.get(sessionId);
     if (!state) {
+      if (this.shouldSuppressInterruptedUpdate(sessionId, status)) {
+        return;
+      }
       // Session not in memory -- still update DB and emit events so subscribers
       // (e.g. MetaAgentService) are notified even if the session was created
       // via queue processing or the state manager lost track after restart.
@@ -249,6 +255,7 @@ export class SessionStateManager extends EventEmitter {
     if (state) {
       this.activeSessions.delete(sessionId);
     }
+    this.recentlyInterruptedSessions.set(sessionId, Date.now());
 
     // Update database -- interrupted is just idle (SDK process died)
     await this.updateDatabase(sessionId, 'idle');
@@ -370,6 +377,7 @@ export class SessionStateManager extends EventEmitter {
 
     // Clear state
     this.activeSessions.clear();
+    this.recentlyInterruptedSessions.clear();
   }
 
   /**
@@ -448,6 +456,24 @@ export class SessionStateManager extends EventEmitter {
     } catch (error) {
       console.error(`[SessionStateManager] Failed to update last_activity for session ${sessionId}:`, error);
     }
+  }
+
+  private shouldSuppressInterruptedUpdate(sessionId: string, status: SessionStatus | undefined): boolean {
+    if (status !== 'running' && status !== 'waiting_for_input') {
+      return false;
+    }
+
+    const interruptedAt = this.recentlyInterruptedSessions.get(sessionId);
+    if (interruptedAt === undefined) {
+      return false;
+    }
+
+    if (Date.now() - interruptedAt > INTERRUPT_SUPPRESSION_MS) {
+      this.recentlyInterruptedSessions.delete(sessionId);
+      return false;
+    }
+
+    return true;
   }
 
   /**

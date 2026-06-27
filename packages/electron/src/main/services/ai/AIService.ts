@@ -2756,6 +2756,12 @@ export class AIService {
         }
 
         provider.abort();
+        try {
+          await getSessionStateManager().interruptSession(sessionId);
+          this.hooklessWatcher.scheduleStop(sessionId, 500);
+        } catch (interruptErr) {
+          logger.main.error('[AIService] cancelRequest: failed to mark session interrupted:', interruptErr);
+        }
         // console.log(`[AIService] Cancelled request for session ${sessionId}`);
         this.analytics.sendEvent('cancel_ai_request', {provider: providerType})
         return { success: true };

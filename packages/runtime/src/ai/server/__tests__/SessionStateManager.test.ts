@@ -106,4 +106,50 @@ describe('SessionStateManager', () => {
       sql.includes('UPDATE ai_sessions SET status = $1') && params?.[0] === 'idle' && params?.[1] === 'session-missing'
     )).toBe(true);
   });
+
+  it('ignores stale running updates after an interrupt until a new turn starts', async () => {
+    const listener = vi.fn<(event: SessionStateEvent) => void>();
+    manager.subscribe(listener);
+
+    await manager.startSession({
+      sessionId: 'session-cancelled',
+      workspacePath: '/workspace/project',
+    });
+
+    listener.mockClear();
+    database.queries = [];
+
+    await manager.interruptSession('session-cancelled');
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:interrupted',
+      sessionId: 'session-cancelled',
+    }));
+
+    listener.mockClear();
+    database.queries = [];
+
+    await manager.updateActivity({
+      sessionId: 'session-cancelled',
+      status: 'running',
+      isStreaming: true,
+    });
+
+    expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:streaming',
+      sessionId: 'session-cancelled',
+    }));
+    expect(database.queries.some(({ sql, params }) =>
+      sql.includes('UPDATE ai_sessions SET status = $1') && params?.[0] === 'running'
+    )).toBe(false);
+
+    await manager.startSession({
+      sessionId: 'session-cancelled',
+      workspacePath: '/workspace/project',
+    });
+
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:started',
+      sessionId: 'session-cancelled',
+    }));
+  });
 });
