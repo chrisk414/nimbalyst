@@ -37,6 +37,7 @@ interface TrackerItemDetailProps {
   onSwitchToFilesMode?: () => void;
   onSwitchToAgentMode?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
+  onLaunchMetaAgent?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
   onDelete?: (itemId: string) => void;
   /** Open another tracker item (relationship pill / backlink click). */
@@ -183,6 +184,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onSwitchToFilesMode,
   onSwitchToAgentMode,
   onLaunchSession,
+  onLaunchMetaAgent,
   onArchive,
   onDelete,
   onOpenItem,
@@ -1466,13 +1468,13 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {/* Linked Sessions -- kept at the top so they're visible without scrolling */}
-        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
+        {(linkedSessions.length > 0 || onLaunchSession || onLaunchMetaAgent || canLinkExistingSession || isLinkingExistingSession) && (
           <div className="tracker-sessions-section">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
                 Sessions{linkedSessions.length > 0 ? ` (${linkedSessions.length})` : ''}
               </label>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 flex-wrap justify-end">
                 {canLinkExistingSession && (
                   <button
                     className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
@@ -1496,6 +1498,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   >
                     <MaterialSymbol icon="add" size={14} />
                     Launch Session
+                  </button>
+                )}
+                {onLaunchMetaAgent && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchMetaAgent(item.id)}
+                    title="Launch a new Meta Agent coordinator for this item"
+                  >
+                    <MaterialSymbol icon="hub" size={14} />
+                    Meta Agent
                   </button>
                 )}
               </div>

@@ -42,6 +42,8 @@ const FILE_TREE_FILTER_OPTIONS: ReadonlyArray<FileTreeFilter> = ['all', 'markdow
 const CLAUDE_SESSION_FILTERS = new Set<FileTreeFilter>(['ai-read', 'ai-written']);
 const GIT_FILTERS = new Set<FileTreeFilter>(['git-uncommitted', 'git-worktree']);
 const SPECIAL_DIRECTORIES = ['nimbalyst-local'];
+const DEFAULT_KNOWN_FILE_EXTENSIONS = ['.md', '.markdown', '.txt', '.json', '.js', '.ts', '.tsx', '.jsx', '.css', '.html', '.xml', '.yaml', '.yml'];
+const DEFAULT_KNOWN_FILE_EXTENSION_OPTIONS = DEFAULT_KNOWN_FILE_EXTENSIONS.join(', ');
 
 function isSpecialDirectory(name: string): boolean {
   return SPECIAL_DIRECTORIES.includes(name);
@@ -70,6 +72,50 @@ function normalizeFilePath(path: string): string {
     normalized = normalized.replace(/\/+$/, '');
   }
   return normalized;
+}
+
+function normalizeFileExtensionOption(value: string): string | null {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  const unquoted = trimmed.replace(/^['"`]+|['"`]+$/g, '');
+  if (!unquoted) {
+    return null;
+  }
+
+  const extension = unquoted.startsWith('*.')
+    ? unquoted.slice(1)
+    : unquoted.startsWith('*')
+      ? unquoted.slice(1)
+      : unquoted;
+  if (!extension || extension === '.') {
+    return null;
+  }
+
+  return extension.startsWith('.') ? extension : `.${extension}`;
+}
+
+function resolveFileExtensionOptions(optionString: string): string[] {
+  const extensions = new Set<string>();
+
+  for (const token of optionString.split(/[\s,;]+/)) {
+    const extension = normalizeFileExtensionOption(token);
+    if (extension) {
+      extensions.add(extension);
+    }
+  }
+
+  return Array.from(extensions);
+}
+
+function resolveKnownFileExtensions(optionString: string, projectOptionString: string): string[] {
+  return Array.from(new Set([
+    ...DEFAULT_KNOWN_FILE_EXTENSIONS,
+    ...resolveFileExtensionOptions(optionString),
+    ...resolveFileExtensionOptions(projectOptionString)
+  ]));
 }
 
 function resolveSessionFilePath(filePath: string, workspacePath?: string): string | null {
@@ -161,6 +207,9 @@ export function WorkspaceSidebar({
   const [showFileIcons, setShowFileIcons] = useState(true);
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [enableAutoScroll, setEnableAutoScroll] = useState(true);
+  const [knownFileExtensionOptions, setKnownFileExtensionOptions] = useState(DEFAULT_KNOWN_FILE_EXTENSION_OPTIONS);
+  const [projectFileExtensionOptions, setProjectFileExtensionOptions] = useState('');
+  const [filteredOutFileExtensionOptions, setFilteredOutFileExtensionOptions] = useState('');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [filterMenuPosition, setFilterMenuPosition] = useState({ x: 0, y: 0 });
   const [sessionFileFilters, setSessionFileFilters] = useState<SessionFileFilterState>({ read: [], written: [] });
@@ -249,6 +298,24 @@ export function WorkspaceSidebar({
           setEnableAutoScroll(state.enableAutoScroll);
         }
 
+        setKnownFileExtensionOptions(
+          typeof state?.knownFileExtensionOptions === 'string'
+            ? state.knownFileExtensionOptions
+            : DEFAULT_KNOWN_FILE_EXTENSION_OPTIONS
+        );
+
+        setProjectFileExtensionOptions(
+          typeof state?.projectFileExtensionOptions === 'string'
+            ? state.projectFileExtensionOptions
+            : ''
+        );
+
+        setFilteredOutFileExtensionOptions(
+          typeof state?.filteredOutFileExtensionOptions === 'string'
+            ? state.filteredOutFileExtensionOptions
+            : ''
+        );
+
         hasLoadedSettingsRef.current = true;
       })
       .catch(error => {
@@ -267,11 +334,14 @@ export function WorkspaceSidebar({
       fileTreeFilter,
       showFileIcons,
       showGitStatus,
-      enableAutoScroll
+      enableAutoScroll,
+      knownFileExtensionOptions,
+      projectFileExtensionOptions,
+      filteredOutFileExtensionOptions
     }).catch(error => {
       console.error('Failed to save file tree settings:', error);
     });
-  }, [workspacePath, fileTreeFilter, showFileIcons, showGitStatus, enableAutoScroll]);
+  }, [workspacePath, fileTreeFilter, showFileIcons, showGitStatus, enableAutoScroll, knownFileExtensionOptions, projectFileExtensionOptions, filteredOutFileExtensionOptions]);
 
   // Notify parent when selected folder changes
   const handleSelectedFolderChange = (folderPath: string | null) => {
@@ -814,11 +884,59 @@ export function WorkspaceSidebar({
   const aiWrittenPathSet = useMemo(() => new Set(sessionFileFilters.written), [sessionFileFilters.written]);
   const gitUncommittedPathSet = useMemo(() => new Set(gitUncommittedFiles), [gitUncommittedFiles]);
   const gitWorktreeModifiedPathSet = useMemo(() => new Set(gitWorktreeModifiedFiles), [gitWorktreeModifiedFiles]);
+  const knownFileExtensions = useMemo(
+    () => resolveKnownFileExtensions(knownFileExtensionOptions, projectFileExtensionOptions),
+    [knownFileExtensionOptions, projectFileExtensionOptions]
+  );
+  const projectFileExtensions = useMemo(
+    () => resolveFileExtensionOptions(projectFileExtensionOptions),
+    [projectFileExtensionOptions]
+  );
+  const filteredOutFileExtensions = useMemo(
+    () => resolveFileExtensionOptions(filteredOutFileExtensionOptions),
+    [filteredOutFileExtensionOptions]
+  );
 
   // Filter file tree based on current filter
   const filterFileTree = useCallback((items: FileTreeItem[], filter: FileTreeFilter): FileTreeItem[] => {
+    const shouldFilterOutFile = (fileName: string): boolean => {
+      if (filteredOutFileExtensions.length === 0) {
+        return false;
+      }
+
+      const lowerName = fileName.toLowerCase();
+      return filteredOutFileExtensions.some(ext => lowerName.endsWith(ext));
+    };
+
+    const applyExtensionExclusions = (entries: FileTreeItem[], keepEmptyDirectories: boolean): FileTreeItem[] => {
+      if (filteredOutFileExtensions.length === 0) {
+        return entries;
+      }
+
+      return entries.reduce((acc: FileTreeItem[], item) => {
+        if (item.type === 'directory') {
+          const filteredChildren = item.children
+            ? applyExtensionExclusions(item.children, keepEmptyDirectories)
+            : item.children;
+
+          if (keepEmptyDirectories || (filteredChildren && filteredChildren.length > 0)) {
+            acc.push({
+              ...item,
+              children: filteredChildren
+            });
+          }
+          return acc;
+        }
+
+        if (!shouldFilterOutFile(item.name)) {
+          acc.push(item);
+        }
+        return acc;
+      }, []);
+    };
+
     if (filter === 'all') {
-      return items;
+      return applyExtensionExclusions(items, true);
     }
 
     if (CLAUDE_SESSION_FILTERS.has(filter)) {
@@ -852,7 +970,7 @@ export function WorkspaceSidebar({
         }, []);
       };
 
-      return filterTrackedItems(items);
+      return applyExtensionExclusions(filterTrackedItems(items), false);
     }
 
     if (GIT_FILTERS.has(filter)) {
@@ -886,10 +1004,8 @@ export function WorkspaceSidebar({
         }, []);
       };
 
-      return filterGitItems(items);
+      return applyExtensionExclusions(filterGitItems(items), false);
     }
-
-    const knownExtensions = ['.md', '.markdown', '.txt', '.json', '.js', '.ts', '.tsx', '.jsx', '.css', '.html', '.xml', '.yaml', '.yml'];
 
     const shouldIncludeFile = (fileName: string): boolean => {
       const lowerName = fileName.toLowerCase();
@@ -899,7 +1015,7 @@ export function WorkspaceSidebar({
       }
 
       if (filter === 'known') {
-        return knownExtensions.some(ext => lowerName.endsWith(ext));
+        return knownFileExtensions.some(ext => lowerName.endsWith(ext));
       }
 
       return true;
@@ -928,8 +1044,8 @@ export function WorkspaceSidebar({
       }, []);
     };
 
-    return filterItems(items);
-  }, [aiReadPathSet, aiWrittenPathSet, gitUncommittedPathSet, gitWorktreeModifiedPathSet]);
+    return applyExtensionExclusions(filterItems(items), false);
+  }, [aiReadPathSet, aiWrittenPathSet, gitUncommittedPathSet, gitWorktreeModifiedPathSet, knownFileExtensions, filteredOutFileExtensions]);
 
   const filteredFileTree = useMemo(
     () => filterFileTree(fileTree, fileTreeFilter),
@@ -964,7 +1080,7 @@ export function WorkspaceSidebar({
       case 'known':
         return {
           title: 'No Known File Types',
-          description: 'No files with recognized extensions found. Showing files with extensions like .md, .txt, .json, .js, .ts, etc.'
+          description: 'No files matched the project known-extension options. Edit Known Files in the filter menu to include more extensions.'
         };
       case 'git-uncommitted':
         return {
@@ -1251,10 +1367,19 @@ export function WorkspaceSidebar({
               showIcons={showFileIcons}
               showGitStatus={showGitStatus}
               enableAutoScroll={enableAutoScroll}
+              filteredOutFileExtensionOptions={filteredOutFileExtensionOptions}
+              filteredOutFileExtensionCount={filteredOutFileExtensions.length}
+              knownFileExtensionOptions={knownFileExtensionOptions}
+              knownFileExtensionCount={knownFileExtensions.length}
+              projectFileExtensionOptions={projectFileExtensionOptions}
+              projectFileExtensionCount={projectFileExtensions.length}
               onFilterChange={handleFilterChange}
               onShowIconsChange={setShowFileIcons}
               onShowGitStatusChange={setShowGitStatus}
               onEnableAutoScrollChange={setEnableAutoScroll}
+              onFilteredOutFileExtensionOptionsChange={setFilteredOutFileExtensionOptions}
+              onKnownFileExtensionOptionsChange={setKnownFileExtensionOptions}
+              onProjectFileExtensionOptionsChange={setProjectFileExtensionOptions}
               hasActiveClaudeSession={hasActiveClaudeSession}
               claudeSessionFileCounts={{
                 read: sessionFileFilters.read.length,

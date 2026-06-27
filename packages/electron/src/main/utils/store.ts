@@ -430,6 +430,12 @@ export interface WorkspaceState {
   onboarding?: OnboardingConfig;
   // File tree filter state
   fileTreeFilter?: WorkspaceFileTreeFilter;
+  // Project-specific extension exclusions applied before all file tree filters
+  filteredOutFileExtensionOptions?: string;
+  // Project-specific additions for the Known Files filter, stored as an editable option string
+  knownFileExtensionOptions?: string;
+  // Project-specific file types included by the Known Files filter
+  projectFileExtensionOptions?: string;
   // File tree icons visibility
   showFileIcons?: boolean;
   // AI provider overrides for this project
@@ -639,6 +645,9 @@ function createDefaultWorkspaceState(workspacePath: string): WorkspaceState {
     navigationHistory: undefined,
     onboarding: undefined,
     fileTreeFilter: undefined,
+    filteredOutFileExtensionOptions: undefined,
+    knownFileExtensionOptions: undefined,
+    projectFileExtensionOptions: undefined,
     showFileIcons: undefined,
     aiProviderOverrides: undefined,
     extensionConfiguration: undefined,

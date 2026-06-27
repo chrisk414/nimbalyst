@@ -559,6 +559,31 @@ test('should persist filter settings after page reload', async () => {
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-script.js' })).toHaveCount(0);
 });
 
+test('should apply quoted filterout extensions across file filters', async () => {
+  await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeFilterButton).click();
+  const filteroutInput = page.locator('[aria-label="Filterout file extensions"]');
+  await expect(filteroutInput).toBeVisible();
+  await filteroutInput.fill('".js"');
+  await page.waitForTimeout(TEST_TIMEOUTS.DEFAULT_WAIT);
+
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-script.js' })).toHaveCount(0);
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-doc.md' })).toBeVisible();
+
+  await page.locator(PLAYWRIGHT_TEST_SELECTORS.filterMenuKnownFiles).click();
+  await page.waitForTimeout(TEST_TIMEOUTS.DEFAULT_WAIT);
+
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-script.js' })).toHaveCount(0);
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-doc.md' })).toBeVisible();
+
+  await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeFilterButton).click();
+  await expect(filteroutInput).toBeVisible();
+  await filteroutInput.fill('');
+  await page.locator(PLAYWRIGHT_TEST_SELECTORS.filterMenuAllFiles).click();
+  await page.waitForTimeout(TEST_TIMEOUTS.DEFAULT_WAIT);
+
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'filter-script.js' })).toBeVisible();
+});
+
 // ========================================================================
 // File Tree Behavior tests (from file-tree-behavior.spec.ts)
 // ========================================================================

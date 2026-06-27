@@ -18,6 +18,7 @@ import { AIService } from './ai/AIService';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
+import { getInheritedLinkedTrackerItemIds } from './metaAgentTrackerLinks';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -555,6 +556,9 @@ export class MetaAgentService {
     // (McpConfigService), and launchActionSession passes a standard parent — so
     // the block actually fired and wrongly relabeled standard parents.
 
+    const parentSession = await AISessionsRepository.get(metaSessionId);
+    const inheritedLinkedTrackerItemIds = getInheritedLinkedTrackerItemIds(parentSession?.metadata);
+
     const sessionId = randomUUID();
     await AISessionsRepository.create({
       id: sessionId,
@@ -571,6 +575,9 @@ export class MetaAgentService {
       // SDK title generator (see ClaudeCodeProvider.runTitleGeneration) does
       // not clobber it via updateTitleIfNotNamed.
       hasBeenNamed: callerProvidedTitle,
+      metadata: inheritedLinkedTrackerItemIds.length > 0
+        ? { linkedTrackerItemIds: inheritedLinkedTrackerItemIds }
+        : undefined,
     } as any);
 
     // Read-only tool segregation: persist a restricted capability scope so the

@@ -36,7 +36,7 @@ import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom,
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
-import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { alphaFeatureEnabledAtom, defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
 import { useFloatingMenu } from '../../hooks/useFloatingMenu';
@@ -101,6 +101,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // falling back to claude-code (which fails for Codex-only installs).
   // See nimbalyst#176.
   const defaultModel = useAtomValue(defaultAgentModelAtom);
+  const isMetaAgentEnabled = useAtomValue(alphaFeatureEnabledAtom('meta-agent'));
 
   useEffect(() => {
     if (!workspacePath) return;
@@ -274,6 +275,76 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       }
     } catch (err) {
       console.error('[TrackerMainView] Failed to launch session:', err);
+    }
+  }, [workspacePath, refreshSessionList, setSelectedWorkstream, setWindowMode, defaultModel]);
+
+  /** Launch a new Meta Agent coordinator linked to a tracker item */
+  const handleLaunchMetaAgent = useCallback(async (trackerItemId: string) => {
+    try {
+      const sessionId = crypto.randomUUID();
+      const parsedModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
+      const provider = parsedModel?.provider || 'claude-code';
+      const itemsMap = store.get(trackerItemsMapAtom);
+      const trackerItem = itemsMap.get(trackerItemId);
+      const title = trackerItem ? getRecordTitle(trackerItem) : trackerItemId;
+      const itemId = trackerItem?.issueKey || trackerItemId;
+
+      const result = await window.electronAPI.invoke('sessions:create', {
+        session: {
+          id: sessionId,
+          provider,
+          model: defaultModel,
+          title: title ? `Meta Agent: ${title}` : 'Meta Agent',
+          agentRole: 'meta-agent',
+        },
+        workspaceId: workspacePath,
+      });
+
+      if (result?.success && result?.id) {
+        if (trackerItem?.system?.documentPath) {
+          await window.electronAPI.invoke('tracker:link-session', {
+            trackerId: `file:${trackerItem.system.documentPath}`,
+            sessionId: result.id,
+          });
+        } else {
+          await window.electronAPI.invoke('tracker:link-session', {
+            trackerId: trackerItemId,
+            sessionId: result.id,
+          });
+        }
+
+        const lines: string[] = [];
+        lines.push(`coordinate tracker item ${itemId}: ${title}`);
+        if (trackerItem) {
+          const status = getRecordStatus(trackerItem);
+          const priority = getRecordPriority(trackerItem);
+          const description = getRecordFieldStr(trackerItem, 'description');
+          const meta: string[] = [];
+          if (trackerItem.primaryType) meta.push(`type: ${trackerItem.primaryType}`);
+          if (status) meta.push(`status: ${status}`);
+          if (priority) meta.push(`priority: ${priority}`);
+          if (meta.length > 0) lines.push(meta.join(', '));
+          if (description) lines.push(`\n${description}`);
+          if (trackerItem.system?.documentPath) {
+            lines.push(`\nSource: @${trackerItem.system.documentPath}`);
+          }
+        }
+        lines.push('\nYou are the Meta Agent coordinator for this Nim card.');
+        lines.push('Plan the work, spawn child sessions only for independent implementation or review tasks, track their status, and summarize progress back to this card.');
+        lines.push('Do not create Git worktrees for VTU unless the user explicitly asks for a Git mirror/worktree flow.');
+        lines.push(`Update this tracker item's status/progress using tracker_update with id "${itemId}".`);
+
+        await window.electronAPI.invoke('ai:saveDraftInput', result.id, lines.join('\n'), workspacePath);
+
+        await refreshSessionList();
+        setSelectedWorkstream({
+          workspacePath: workspacePath || '',
+          selection: { type: 'session', id: result.id },
+        });
+        setWindowMode('agent');
+      }
+    } catch (err) {
+      console.error('[TrackerMainView] Failed to launch meta-agent session:', err);
     }
   }, [workspacePath, refreshSessionList, setSelectedWorkstream, setWindowMode, defaultModel]);
 
@@ -994,6 +1065,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onSwitchToFilesMode={onSwitchToFilesMode}
               onSwitchToAgentMode={handleSwitchToAgentMode}
               onLaunchSession={handleLaunchSession}
+              onLaunchMetaAgent={isMetaAgentEnabled ? handleLaunchMetaAgent : undefined}
               onArchive={handleArchiveItem}
               onDelete={handleDeleteItem}
               onOpenItem={handleItemSelect}
