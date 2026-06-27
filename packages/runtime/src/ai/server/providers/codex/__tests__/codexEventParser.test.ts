@@ -138,4 +138,41 @@ describe('parseCodexEvent token_count parsing', () => {
       },
     });
   });
+
+  it('normalizes web_search items with nested query text', () => {
+    const parsed = parseCodexEvent({
+      type: 'item.completed',
+      item: {
+        id: 'web-1',
+        type: 'web_search',
+        query: '',
+        action: { type: 'search', query: 'RAG Anything GitHub LightRAG documentation' },
+      },
+    });
+
+    expect(parsed).toContainEqual({
+      toolCall: {
+        id: 'web-1',
+        name: 'web_search',
+        arguments: {
+          query: 'RAG Anything GitHub LightRAG documentation',
+          action: { type: 'search', query: 'RAG Anything GitHub LightRAG documentation' },
+        },
+        result: {
+          success: true,
+          query: 'RAG Anything GitHub LightRAG documentation',
+          action: { type: 'search', query: 'RAG Anything GitHub LightRAG documentation' },
+        },
+      },
+      rawEvent: {
+        type: 'item.completed',
+        item: {
+          id: 'web-1',
+          type: 'web_search',
+          query: '',
+          action: { type: 'search', query: 'RAG Anything GitHub LightRAG documentation' },
+        },
+      },
+    });
+  });
 });

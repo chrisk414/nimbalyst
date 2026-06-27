@@ -44,6 +44,11 @@ import {
   getCodexVendorPathEntries,
   resolveCodexBinaryPath,
 } from './codexAppServer/codexAppServerBinary';
+import {
+  extractWebSearchStrings,
+  isWebSearchItemType,
+  normalizeWebSearchArguments,
+} from './codexAppServer/webSearchArguments';
 import type {
   AnyItem,
   ApprovalResponse,
@@ -123,9 +128,46 @@ interface AppServerSessionRaw {
   stderrTail: string[];
 }
 
+const WEB_SEARCH_DIAGNOSTIC_ENV = 'NIMBALYST_CODEX_WEBSEARCH_DIAGNOSTICS';
+const WEB_SEARCH_DIAGNOSTIC_PREVIEW_LIMIT = 6000;
+
 function previewForLog(value: string | undefined, max = 300): string | undefined {
   if (!value) return value;
   return value.length > max ? `${value.slice(0, max)}...` : value;
+}
+
+function isWebSearchDiagnosticEnabled(): boolean {
+  const value = process.env[WEB_SEARCH_DIAGNOSTIC_ENV];
+  return value === '1' || value?.toLowerCase() === 'true';
+}
+
+function jsonPreview(value: unknown, max = WEB_SEARCH_DIAGNOSTIC_PREVIEW_LIMIT): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized) return '';
+    return serialized.length > max ? `${serialized.slice(0, max)}...` : serialized;
+  } catch (error) {
+    return `[unserializable: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function summarizeDiagnosticItem(paramsUnknown: unknown): Record<string, unknown> {
+  const params = getRecord(paramsUnknown);
+  const item = getRecord(params?.item);
+  if (!item) return {};
+
+  return {
+    itemId: item.id,
+    itemType: item.type,
+    itemStatus: item.status,
+    rawItem: jsonPreview(item),
+  };
 }
 
 function summarizeNotificationParams(
@@ -185,6 +227,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private readonly resolveCodexPathOverride: () => string | undefined;
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
+  private webSearchDiagnosticSequence = 0;
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
@@ -305,6 +348,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const turnInput = await this.buildInput(message);
     let turnStartResultId: string | null = null;
     try {
+      this.logWebSearchDiagnostic('turn/start:request', {
+        threadId: raw.threadId,
+        input: turnInput,
+      });
       const turnStart = await raw.client.request<{ turn?: { id?: string } }>('turn/start', {
         threadId: raw.threadId,
         input: turnInput,
@@ -620,6 +667,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // if (summary) {
     //   console.log('[CODEX][APPSERVER] notification:', method, summary);
     // }
+    this.logWebSearchDiagnostic(method, paramsUnknown);
     // Emit a raw_event for every notification so transcript persistence has a
     // complete log, just like the SDK adapter does for SDK events.
     push({
@@ -982,7 +1030,30 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
       args[key] = value;
     }
-    return args;
+    return isWebSearchItemType(record.type) ? normalizeWebSearchArguments(args, record) : args;
+  }
+
+  private logWebSearchDiagnostic(method: string, paramsUnknown: unknown): void {
+    if (!isWebSearchDiagnosticEnabled()) return;
+
+    const params = getRecord(paramsUnknown);
+    const item = getRecord(params?.item);
+    const itemType = item?.type;
+    const extractedSearchStrings = extractWebSearchStrings(paramsUnknown);
+    const isWebSearchItem = isWebSearchItemType(itemType);
+    const shouldIncludeRaw = isWebSearchItem || extractedSearchStrings.length > 0 || method === 'turn/start:request';
+
+    const entry = {
+      sequence: ++this.webSearchDiagnosticSequence,
+      method,
+      threadId: params?.threadId,
+      turnId: params?.turnId,
+      ...summarizeDiagnosticItem(paramsUnknown),
+      extractedSearchStrings,
+      paramsPreview: shouldIncludeRaw ? jsonPreview(paramsUnknown) : undefined,
+    };
+
+    console.warn('[CODEX][APPSERVER][WEBSEARCH-DIAG]', JSON.stringify(entry));
   }
 
   private buildGenericToolLikeResult(item: AnyItem): ToolResult | string {

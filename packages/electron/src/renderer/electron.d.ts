@@ -1470,6 +1470,7 @@ interface ElectronAPI {
   openThirdPartyNotices: () => Promise<{ success: boolean; error?: string }>;
 
   // Image operations
+  authorizeImageFile: (imagePath: string) => Promise<{ success: boolean; error?: string }>;
   openImageInDefaultApp: (imagePath: string) => Promise<{ success: boolean; error?: string }>;
   startImageDrag: (imagePath: string) => Promise<{ success: boolean; error?: string }>;
 

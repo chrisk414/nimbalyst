@@ -20,7 +20,8 @@ export function formatToolDisplayName(toolName?: string): string {
     return 'File Change';
   }
 
-  if (trimmed === 'web_search') {
+  const normalized = trimmed.toLowerCase();
+  if (normalized === 'web_search' || normalized === 'websearch') {
     return 'Web Search';
   }
 

@@ -62,4 +62,39 @@ describe('MarkdownRenderer file-path autolinking', () => {
     );
     expect(container.querySelector('a')).toBeNull();
   });
+
+  it('renders direct local image links as inline previews', async () => {
+    const onOpenFile = vi.fn();
+    const { container } = render(
+      <MarkdownRenderer
+        content="[generated image](C:/Users/test/generated.png)"
+        onOpenFile={onOpenFile}
+      />,
+    );
+
+    const preview = container.querySelector('.transcript-local-image-preview');
+    expect(preview).not.toBeNull();
+
+    const image = await screen.findByRole('img', { name: 'generated image' });
+    expect(image.getAttribute('src')).toContain('C:/Users/test/generated.png');
+
+    fireEvent.click(preview!);
+    expect(onOpenFile).toHaveBeenCalledWith('C:/Users/test/generated.png');
+  });
+
+  it('keeps direct local non-image links as clickable text', () => {
+    const onOpenFile = vi.fn();
+    render(
+      <MarkdownRenderer
+        content="[source file](C:/Users/test/source.ts)"
+        onOpenFile={onOpenFile}
+      />,
+    );
+
+    const link = screen.getByText('source file');
+    expect(link.tagName).toBe('A');
+
+    fireEvent.click(link);
+    expect(onOpenFile).toHaveBeenCalledWith('C:/Users/test/source.ts');
+  });
 });

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { sep } from "path";
+import { resolve, sep } from "path";
 import {
   encodeNimAssetUrl,
+  isNimAssetImagePath,
   validateNimAssetPath,
   NIM_ASSET_SCHEME,
   NIM_ASSET_HOST,
@@ -9,6 +10,7 @@ import {
 
 const ROOT = `${sep}tmp${sep}allowed-root`;
 const OTHER = `${sep}tmp${sep}allowed-other`;
+const expectedPath = (path: string) => resolve(path);
 
 describe("nimAssetProtocol", () => {
   describe("encodeNimAssetUrl", () => {
@@ -33,16 +35,16 @@ describe("nimAssetProtocol", () => {
     const roots = [ROOT, OTHER];
 
     it("accepts a PNG inside the first allowlisted root", () => {
-      expect(validateNimAssetPath(`${ROOT}/img.png`, roots)).toBe(`${ROOT}/img.png`);
+      expect(validateNimAssetPath(`${ROOT}/img.png`, roots)).toBe(expectedPath(`${ROOT}/img.png`));
     });
 
     it("accepts a JPG inside another allowlisted root", () => {
-      expect(validateNimAssetPath(`${OTHER}/sub/x.jpg`, roots)).toBe(`${OTHER}/sub/x.jpg`);
+      expect(validateNimAssetPath(`${OTHER}/sub/x.jpg`, roots)).toBe(expectedPath(`${OTHER}/sub/x.jpg`));
     });
 
     it("accepts each image extension in the allowlist", () => {
       for (const ext of [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"]) {
-        expect(validateNimAssetPath(`${ROOT}/x${ext}`, roots)).toBe(`${ROOT}/x${ext}`);
+        expect(validateNimAssetPath(`${ROOT}/x${ext}`, roots)).toBe(expectedPath(`${ROOT}/x${ext}`));
       }
     });
 
@@ -88,7 +90,7 @@ describe("nimAssetProtocol", () => {
     });
 
     it("normalizes the file extension comparison case-insensitively", () => {
-      expect(validateNimAssetPath(`${ROOT}/IMG.PNG`, roots)).toBe(`${ROOT}/IMG.PNG`);
+      expect(validateNimAssetPath(`${ROOT}/IMG.PNG`, roots)).toBe(expectedPath(`${ROOT}/IMG.PNG`));
     });
 
     it("requires the root prefix match to be a directory boundary, not a substring prefix", () => {
@@ -102,7 +104,27 @@ describe("nimAssetProtocol", () => {
       // Documenting current behavior: if requestedAbsPath === root and the
       // root has an image extension, it passes. Realistic roots are
       // directories so this never triggers in production.
-      expect(validateNimAssetPath(`${ROOT}.png`, [`${ROOT}.png`])).toBe(`${ROOT}.png`);
+      expect(validateNimAssetPath(`${ROOT}.png`, [`${ROOT}.png`])).toBe(expectedPath(`${ROOT}.png`));
+    });
+
+    it("accepts an exact allowlisted image file outside every root", () => {
+      const external = `${sep}tmp${sep}external-opened${sep}opened image.png`;
+
+      expect(validateNimAssetPath(external, roots, [external])).toBe(expectedPath(external));
+    });
+
+    it("does not allow sibling images for an exact allowlisted file", () => {
+      const external = `${sep}tmp${sep}external-opened${sep}opened.png`;
+      const sibling = `${sep}tmp${sep}external-opened${sep}sibling.png`;
+
+      expect(validateNimAssetPath(sibling, roots, [external])).toBeNull();
+    });
+  });
+
+  describe("isNimAssetImagePath", () => {
+    it("recognizes supported image paths", () => {
+      expect(isNimAssetImagePath(`${ROOT}/x.png`)).toBe(true);
+      expect(isNimAssetImagePath(`${ROOT}/x.txt`)).toBe(false);
     });
   });
 });

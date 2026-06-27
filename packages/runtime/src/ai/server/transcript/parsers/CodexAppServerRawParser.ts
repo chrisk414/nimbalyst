@@ -19,6 +19,10 @@
 import type { RawMessage } from '../TranscriptTransformer';
 import { parseMcpToolName } from '../utils';
 import { buildCodexToolLookupId } from '../../toolLookupIds';
+import {
+  isWebSearchItemType,
+  normalizeWebSearchArguments,
+} from '../../protocols/codexAppServer/webSearchArguments';
 import type {
   IRawMessageParser,
   ParseContext,
@@ -695,7 +699,7 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       }
       args[key] = value;
     }
-    return args;
+    return isWebSearchItemType(record.type) ? normalizeWebSearchArguments(args, record) : args;
   }
 
   private buildGenericToolLikeResult(item: AppServerItem): string {

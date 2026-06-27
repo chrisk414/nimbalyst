@@ -1,4 +1,5 @@
 import { extractTextFromCodexEvent } from './textExtraction';
+import { normalizeWebSearchArguments } from '../../protocols/codexAppServer/webSearchArguments';
 
 export interface ParsedCodexToolCall {
   id?: string;
@@ -225,19 +226,19 @@ function extractSpecialToolCall(
   }
 
   if (itemType === 'web_search') {
+    const args = normalizeWebSearchArguments({
+      query: typeof record.query === 'string' ? record.query : '',
+      ...(record.action !== undefined ? { action: record.action } : {}),
+    }, record);
     return {
       id: typeof record.id === 'string' ? record.id : undefined,
       name: 'web_search',
-      arguments: {
-        query: typeof record.query === 'string' ? record.query : '',
-        ...(record.action !== undefined ? { action: record.action } : {}),
-      },
+      arguments: args,
       ...(eventType === 'item.completed'
         ? {
             result: {
               success: true,
-              query: typeof record.query === 'string' ? record.query : '',
-              ...(record.action !== undefined ? { action: record.action } : {}),
+              ...args,
             },
           }
         : {}),

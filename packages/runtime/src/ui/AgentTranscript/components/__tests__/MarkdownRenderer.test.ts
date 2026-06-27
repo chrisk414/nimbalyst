@@ -20,6 +20,18 @@ describe('resolveTranscriptFilePathFromHref', () => {
     );
   });
 
+  it('resolves direct Windows absolute file paths with forward slashes', () => {
+    expect(resolveTranscriptFilePathFromHref('C:/Users/test/My%20Project/image.png')).toBe(
+      'C:/Users/test/My Project/image.png'
+    );
+  });
+
+  it('resolves direct Windows absolute file paths with backslashes', () => {
+    expect(resolveTranscriptFilePathFromHref('C:\\Users\\test\\My%20Project\\image.png')).toBe(
+      'C:\\Users\\test\\My Project\\image.png'
+    );
+  });
+
   it('returns null for external web links', () => {
     expect(resolveTranscriptFilePathFromHref('https://nimbalyst.com/docs')).toBeNull();
   });

@@ -18,6 +18,10 @@ interface TranscriptEventBus {
   emit(event: any): void;
 }
 import type { ProtocolEvent } from '../../protocols/ProtocolInterface';
+import {
+  isWebSearchItemType,
+  normalizeWebSearchArguments,
+} from '../../protocols/codexAppServer/webSearchArguments';
 import { parseMcpToolName } from '../../transcript/utils';
 
 // ---------------------------------------------------------------------------
@@ -108,7 +112,11 @@ export class AgentProtocolTranscriptAdapter {
 
     const toolId = tc.id ?? `anon-tool-${++this.anonToolCounter}`;
     const toolName = tc.name;
-    const args = tc.arguments ?? {};
+    const rawArgs = tc.arguments ?? {};
+    const args = isWebSearchItemType(toolName)
+      ? normalizeWebSearchArguments(rawArgs, { ...rawArgs, result: tc.result })
+      : rawArgs;
+    const normalizedToolCall = args === rawArgs ? tc : { ...tc, arguments: args };
 
     // Emit tool_call_started (with dedup)
     if (!this.emittedToolCalls.has(toolId)) {
@@ -155,7 +163,7 @@ export class AgentProtocolTranscriptAdapter {
       });
     }
 
-    return [{ kind: 'tool_call', toolCall: tc }];
+    return [{ kind: 'tool_call', toolCall: normalizedToolCall }];
   }
 
   private handleToolResult(event: ProtocolEvent): ParsedItem[] {

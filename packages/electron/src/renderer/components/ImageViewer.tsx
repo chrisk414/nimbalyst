@@ -14,28 +14,55 @@ interface ImageViewerProps {
   fileName: string;
 }
 
+function normalizeLocalImagePath(path: string): string {
+  if (!path.startsWith('file://')) return path;
+
+  const url = new URL(path);
+  const hostPrefix = url.hostname ? `//${url.hostname}` : '';
+  const decodedPath = decodeURIComponent(`${hostPrefix}${url.pathname}`);
+  const windowsDrivePath = decodedPath.match(/^\/([A-Za-z]:\/.*)$/);
+  return windowsDrivePath ? windowsDrivePath[1] : decodedPath;
+}
+
 export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) => {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const loadImage = async () => {
       try {
         // Issue #146: route through `nim-asset://` so the renderer stays
         // same-origin (lets `webSecurity: true` stay on the main window).
         // The main-process handler validates the path against allowlisted
-        // workspace + userData roots.
-        const absolute = filePath.startsWith('file://') ? filePath.replace(/^file:\/\//, '') : filePath;
+        // workspace/userData roots or an exact image file authorized below.
+        const absolute = normalizeLocalImagePath(filePath);
+        if (typeof window.electronAPI.authorizeImageFile === 'function') {
+          const authorization = await window.electronAPI.authorizeImageFile(absolute);
+          if (!authorization.success) {
+            throw new Error(authorization.error || 'Image file is not authorized');
+          }
+        }
+        if (cancelled) return;
         setImageSrc(nimAssetUrl(absolute));
         setError(null);
       } catch (err) {
+        if (cancelled) return;
         setError('Failed to load image');
         console.error('Error loading image:', err);
       }
     };
 
+    setImageSrc(null);
+    setError(null);
+    setDimensions(null);
     loadImage();
+
+    return () => {
+      cancelled = true;
+    };
   }, [filePath]);
 
   const handleImageError = () => {
@@ -63,7 +90,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) 
   }
 
   return (
-    <div className="h-full bg-nim">
+    <div className="image-viewer h-full bg-nim">
       <ZoomableImageSurface
         src={imageSrc}
         alt={fileName}

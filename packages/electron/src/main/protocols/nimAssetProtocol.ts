@@ -14,7 +14,8 @@
  * The handler decodes the absolute path, resolves it (defending against
  * `..` and symlink escapes), and only serves it if:
  *   1. The resolved path lives under one of the allowlisted root prefixes
- *      (open workspace paths + `<userData>/chat-attachments`).
+ *      (open workspace paths + `<userData>/chat-attachments`) or exactly
+ *      matches a user-opened image file.
  *   2. The file extension is in the image allowlist.
  *
  * Both gates are required. The allowlist is populated dynamically as
@@ -40,6 +41,7 @@ const IMAGE_EXTENSIONS = new Set<string>([
 ]);
 
 const allowedRoots = new Set<string>();
+const allowedFiles = new Set<string>();
 
 /**
  * Add a root prefix that `nim-asset://` is allowed to serve files from. Idempotent.
@@ -60,10 +62,24 @@ export function removeNimAssetRoot(rootAbsolutePath: string): void {
 }
 
 /**
+ * Allow one exact local image file to be served through `nim-asset://`.
+ *
+ * This is for standalone image tabs opened outside the active workspace. Do
+ * not widen these to parent directories; workspace-root authorization covers
+ * project images, while external image tabs should authorize only the file the
+ * user explicitly opened.
+ */
+export function addNimAssetFile(fileAbsolutePath: string): void {
+  if (!fileAbsolutePath) return;
+  allowedFiles.add(resolve(fileAbsolutePath));
+}
+
+/**
  * For tests.
  */
 export function clearNimAssetRoots(): void {
   allowedRoots.clear();
+  allowedFiles.clear();
 }
 
 /**
@@ -71,6 +87,18 @@ export function clearNimAssetRoots(): void {
  */
 export function getNimAssetRoots(): string[] {
   return [...allowedRoots];
+}
+
+/**
+ * For tests and diagnostics.
+ */
+export function getNimAssetFiles(): string[] {
+  return [...allowedFiles];
+}
+
+export function isNimAssetImagePath(filePath: string): boolean {
+  if (!filePath || filePath.includes("\0")) return false;
+  return IMAGE_EXTENSIONS.has(extname(resolve(filePath)).toLowerCase());
 }
 
 /**
@@ -96,6 +124,7 @@ export function encodeNimAssetUrl(absolutePath: string): string {
 export function validateNimAssetPath(
   requestedAbsPath: string,
   roots: Iterable<string>,
+  files: Iterable<string> = allowedFiles,
 ): string | null {
   if (!requestedAbsPath) return null;
   if (requestedAbsPath.includes("\0")) return null;
@@ -112,6 +141,12 @@ export function validateNimAssetPath(
 
   const ext = extname(resolved).toLowerCase();
   if (!IMAGE_EXTENSIONS.has(ext)) return null;
+
+  for (const file of files) {
+    if (resolved === resolve(file)) {
+      return resolved;
+    }
+  }
 
   let matched = false;
   for (const root of roots) {
@@ -202,7 +237,17 @@ export function registerNimAssetProtocolHandler(): void {
           break;
         }
       }
-      if (!realInsideRoot) {
+
+      let realMatchesAllowedFile = false;
+      for (const file of allowedFiles) {
+        const fileResolved = await realpath(file).catch(() => resolve(file));
+        if (real === fileResolved) {
+          realMatchesAllowedFile = true;
+          break;
+        }
+      }
+
+      if (!realInsideRoot && !realMatchesAllowedFile) {
         return new Response("Forbidden", { status: 403 });
       }
 

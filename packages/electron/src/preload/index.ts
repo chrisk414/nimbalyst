@@ -1316,6 +1316,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openThirdPartyNotices: () => ipcRenderer.invoke('legal:open-third-party-notices'),
 
   // Image operations
+  authorizeImageFile: (imagePath: string) => ipcRenderer.invoke('image:authorize-file', imagePath),
   openImageInDefaultApp: (imagePath: string) => ipcRenderer.invoke('image:open-in-default-app', imagePath),
   startImageDrag: (imagePath: string) => ipcRenderer.invoke('image:start-drag', imagePath),
 

@@ -415,7 +415,8 @@ describe('CodexAppServerRawParser', () => {
           id: 'web-1',
           type: 'webSearch',
           status: 'completed',
-          query: 'claude code transcripts',
+          query: '',
+          action: { type: 'search', query: 'claude code transcripts' },
           result: {
             content: [{ type: 'text', text: 'search complete' }],
           },

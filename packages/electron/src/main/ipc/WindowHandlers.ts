@@ -2,16 +2,22 @@ import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
 import { basename, join } from 'path';
+import { fileURLToPath } from 'url';
 import { writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { reportDesktopActivity, setWindowFocused, setScreenLocked, setIdleThresholdMs, attemptReconnect } from '../services/SyncManager';
 import { startNetworkAvailability, onNetworkAvailable, notifyNetworkAvailable } from '../services/NetworkAvailability';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { getPackageRoot } from '../utils/appPaths';
+import { addNimAssetFile, isNimAssetImagePath } from '../protocols/nimAssetProtocol';
 
 /** Timestamp of last app_foregrounded event, used to throttle to once per 30 minutes */
 let lastForegroundedEventAt = 0;
 const FOREGROUND_THROTTLE_MS = 30 * 60 * 1000; // 30 minutes
+
+function normalizeLocalImagePath(imagePath: string): string {
+    return imagePath.startsWith('file://') ? fileURLToPath(imagePath) : imagePath;
+}
 
 export function registerWindowHandlers() {
     // Get initial window state
@@ -103,6 +109,25 @@ export function registerWindowHandlers() {
     });
 
 
+    // Authorize one local image file for same-origin `nim-asset://` preview.
+    safeHandle('image:authorize-file', async (_event, imagePath: string) => {
+        if (!imagePath || typeof imagePath !== 'string') {
+            throw new Error('image:authorize-file requires imagePath');
+        }
+
+        const filePath = normalizeLocalImagePath(imagePath);
+        if (!isNimAssetImagePath(filePath)) {
+            return { success: false, error: 'Unsupported image file type' };
+        }
+
+        if (!existsSync(filePath)) {
+            return { success: false, error: 'Image file does not exist' };
+        }
+
+        addNimAssetFile(filePath);
+        return { success: true };
+    });
+
     // Open image in default application
     safeHandle('image:open-in-default-app', async (event, imagePath: string) => {
         try {
@@ -117,11 +142,7 @@ export function registerWindowHandlers() {
                 }
             }
 
-            // Handle file:// URLs
-            let filePath = imagePath;
-            if (filePath.startsWith('file://')) {
-                filePath = filePath.replace('file://', '');
-            }
+            const filePath = normalizeLocalImagePath(imagePath);
 
             // Check if file exists
             if (!existsSync(filePath)) {
@@ -158,11 +179,7 @@ export function registerWindowHandlers() {
                 imagePath = tempPath;
             }
 
-            // Handle file:// URLs
-            let filePath = imagePath;
-            if (filePath.startsWith('file://')) {
-                filePath = filePath.replace('file://', '');
-            }
+            const filePath = normalizeLocalImagePath(imagePath);
 
             // Check if file exists
             if (!existsSync(filePath)) {

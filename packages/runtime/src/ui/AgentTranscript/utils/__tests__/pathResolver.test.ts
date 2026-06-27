@@ -171,6 +171,31 @@ describe('pathResolver', () => {
       });
     });
 
+    describe('Web Search tool', () => {
+      it('should format the search string from nested action payloads', () => {
+        const args = {
+          query: '',
+          action: {
+            type: 'search',
+            query: 'best RAG system for source code projects'
+          }
+        };
+        const result = formatToolArguments('webSearch', args, workspacePath);
+        expect(result).toBe('"best RAG system for source code projects"');
+      });
+
+      it('should format search_query arrays from web tool arguments', () => {
+        const args = {
+          search_query: [
+            { q: 'RAG Anything documentation' },
+            { q: 'LightRAG graph viewer' }
+          ]
+        };
+        const result = formatToolArguments('web_search', args, workspacePath);
+        expect(result).toBe('"RAG Anything documentation"; "LightRAG graph viewer"');
+      });
+    });
+
     describe('Unknown tools', () => {
       it('should try to extract file path from common properties', () => {
         const args = { filePath: '/Users/john/projects/myapp/src/test.ts' };

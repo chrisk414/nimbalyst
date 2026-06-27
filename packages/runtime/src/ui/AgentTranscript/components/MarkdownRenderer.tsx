@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -11,6 +11,7 @@ import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
 import { rehypeAutolinkFilePaths } from '../markdown/rehypeAutolinkFilePaths';
 import { TrackerReferenceChip } from '../../../plugins/TrackerLinkPlugin';
 import { TRACKER_REFERENCE_URN_SCHEME } from '../../../plugins/TrackerLinkPlugin/TrackerReferenceNode';
+import { localAssetUrl } from '../../../utils/localAssetUrl';
 
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
@@ -244,6 +245,16 @@ const OverflowWrapper: React.FC<{
 
 /** Matches a UUID (v4-style hex with dashes) used as session reference hrefs. */
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LOCAL_IMAGE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.bmp',
+  '.ico',
+]);
 
 interface MarkdownRendererProps {
   content: string;
@@ -293,6 +304,183 @@ function isAbsoluteFilePath(filePath: string): boolean {
   );
 }
 
+function isWindowsAbsolutePath(filePath: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(filePath);
+}
+
+function isLocalImageFilePath(filePath: string): boolean {
+  const cleanPath = stripLineAndColumnSuffix(stripQueryAndHash(filePath));
+  const extensionMatch = cleanPath.match(/\.([A-Za-z0-9]+)$/);
+  return extensionMatch ? LOCAL_IMAGE_EXTENSIONS.has(`.${extensionMatch[1].toLowerCase()}`) : false;
+}
+
+function transcriptUrlTransform(value: string): string {
+  if (isWindowsAbsolutePath(value) || /^file:\/\//i.test(value)) {
+    return value;
+  }
+
+  return defaultUrlTransform(value);
+}
+
+function getFileNameFromPath(filePath: string): string {
+  return filePath.split(/[/\\]+/).filter(Boolean).pop() || filePath;
+}
+
+function reactNodeToText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(reactNodeToText).join('');
+  }
+  return '';
+}
+
+const TranscriptLocalImagePreview: React.FC<{
+  filePath: string;
+  label: React.ReactNode;
+  onOpenFile?: (filePath: string) => void;
+}> = ({ filePath, label, onOpenFile }) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const labelText = reactNodeToText(label) || getFileNameFromPath(filePath);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreview = async () => {
+      try {
+        setSrc(null);
+        setFailed(false);
+
+        const electronAPI = (window as any).electronAPI;
+        if (typeof electronAPI?.authorizeImageFile === 'function') {
+          const authorization = await electronAPI.authorizeImageFile(filePath);
+          if (!authorization?.success) {
+            throw new Error(authorization?.error || 'Image file is not authorized');
+          }
+        }
+
+        if (!cancelled) {
+          setSrc(localAssetUrl(filePath));
+        }
+      } catch {
+        if (!cancelled) {
+          setFailed(true);
+        }
+      }
+    };
+
+    void loadPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
+
+  const openFile = (event: React.MouseEvent | React.KeyboardEvent) => {
+    if (!onOpenFile) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onOpenFile(filePath);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      openFile(event);
+    }
+  };
+
+  if (failed) {
+    return (
+      <a
+        href={filePath}
+        onClick={(event) => {
+          if (onOpenFile) {
+            event.preventDefault();
+            onOpenFile(filePath);
+          }
+        }}
+        style={{
+          color: 'var(--nim-primary)',
+          textDecoration: 'underline',
+          cursor: 'pointer',
+        }}
+      >
+        {label}
+      </a>
+    );
+  }
+
+  return (
+    <span
+      className="transcript-local-image-preview"
+      role={onOpenFile ? 'button' : undefined}
+      tabIndex={onOpenFile ? 0 : undefined}
+      onClick={openFile}
+      onKeyDown={handleKeyDown}
+      title={onOpenFile ? 'Open image in editor' : undefined}
+      style={{
+        display: 'inline-flex',
+        flexDirection: 'column',
+        maxWidth: 'min(100%, 420px)',
+        marginTop: '0.5rem',
+        marginBottom: '0.5rem',
+        border: '1px solid var(--nim-border)',
+        borderRadius: '0.5rem',
+        overflow: 'hidden',
+        backgroundColor: 'var(--nim-bg-secondary)',
+        verticalAlign: 'top',
+        cursor: onOpenFile ? 'pointer' : 'default',
+      }}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt={labelText}
+          onError={() => setFailed(true)}
+          style={{
+            display: 'block',
+            width: '100%',
+            maxHeight: '320px',
+            objectFit: 'contain',
+            backgroundColor: 'var(--nim-bg)',
+          }}
+        />
+      ) : (
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 'min(420px, 100%)',
+            minHeight: '120px',
+            color: 'var(--nim-text-muted)',
+            fontSize: '0.8125rem',
+          }}
+        >
+          Loading preview...
+        </span>
+      )}
+      <span
+        style={{
+          display: 'block',
+          maxWidth: '100%',
+          padding: '0.45rem 0.6rem',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: 'var(--nim-text-muted)',
+          fontSize: '0.75rem',
+          borderTop: '1px solid var(--nim-border)',
+        }}
+      >
+        {labelText}
+      </span>
+    </span>
+  );
+};
+
 /**
  * Returns the tracker reference key for a `nimbalyst://<key>` href, or null.
  */
@@ -331,7 +519,7 @@ export function resolveTranscriptFilePathFromHref(href?: string): string | null 
     }
   } else {
     // Keep web links (https:, mailto:, etc.) as external links.
-    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
+    if (!isWindowsAbsolutePath(trimmedHref) && /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
       return null;
     }
     candidate = safeDecodeURIComponent(stripQueryAndHash(trimmedHref));
@@ -417,6 +605,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        urlTransform={transcriptUrlTransform}
         components={{
           // Code blocks with syntax highlighting
           code({ node, inline, className, children, ...props }: any) {
@@ -603,6 +792,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               resolvedAutolink ?? (onOpenFile ? resolveTranscriptFilePathFromHref(href) : null);
             const isSessionLink = onOpenSession && href && SESSION_UUID_RE.test(href.trim());
             const isInternalLink = filePath || isSessionLink;
+            if (filePath && isLocalImageFilePath(filePath)) {
+              return (
+                <TranscriptLocalImagePreview
+                  filePath={filePath}
+                  label={children}
+                  onOpenFile={onOpenFile}
+                />
+              );
+            }
             return (
               <a
                 href={href}
@@ -625,6 +823,29 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               >
                 {children}
               </a>
+            );
+          },
+          img: ({ src, alt }) => {
+            const filePath = resolveTranscriptFilePathFromHref(src);
+            if (filePath && isLocalImageFilePath(filePath)) {
+              return (
+                <TranscriptLocalImagePreview
+                  filePath={filePath}
+                  label={alt || getFileNameFromPath(filePath)}
+                  onOpenFile={onOpenFile}
+                />
+              );
+            }
+
+            return (
+              <img
+                src={src}
+                alt={alt || ''}
+                style={{
+                  maxWidth: '100%',
+                  height: 'auto',
+                }}
+              />
             );
           },
           // Lists

@@ -35,6 +35,56 @@ function normalizeToolName(toolName: string): string {
   return name;
 }
 
+const SEARCH_QUERY_KEYS = new Set(['query', 'q', 'searchQuery', 'search_query']);
+const SEARCH_CONTAINER_KEYS = new Set(['action', 'input', 'request', 'searchQuery', 'search_query', 'imageQuery', 'image_query', 'queries']);
+
+function collectSearchStrings(value: unknown, depth = 0): string[] {
+  if (depth > 4) return [];
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(entry => collectSearchStrings(entry, depth + 1));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  const queries: string[] = [];
+  for (const [key, child] of Object.entries(record)) {
+    if (SEARCH_QUERY_KEYS.has(key)) {
+      queries.push(...collectSearchStrings(child, depth + 1));
+    }
+  }
+
+  for (const [key, child] of Object.entries(record)) {
+    if (SEARCH_CONTAINER_KEYS.has(key)) {
+      queries.push(...collectSearchStrings(child, depth + 1));
+    }
+  }
+
+  return queries;
+}
+
+function formatSearchArguments(args: Record<string, unknown>): string {
+  const queries = Array.from(new Set(collectSearchStrings(args)));
+  if (queries.length === 0) {
+    return '';
+  }
+
+  const display = queries.length === 1
+    ? queries[0]
+    : queries.slice(0, 3).join('"; "');
+  const suffix = queries.length > 3 ? `; +${queries.length - 3} more` : '';
+  const text = `${display}${suffix}`;
+  return `"${text.length > 80 ? text.slice(0, 77) + '...' : text}"`;
+}
+
 /**
  * Extract file path from tool arguments (only for tools that reference actual files)
  * @param toolName - Name of the tool
@@ -167,7 +217,7 @@ export function formatToolArguments(
     return '';
   }
 
-  switch (toolName.toLowerCase()) {
+  switch (normalizeToolName(toolName)) {
     case 'read': {
       const filePath = args.file_path || args.path || args.filePath;
       if (filePath) {
@@ -235,6 +285,11 @@ export function formatToolArguments(
         return command.length > 50 ? command.slice(0, 50) + '...' : command;
       }
       break;
+    }
+
+    case 'websearch':
+    case 'web_search': {
+      return formatSearchArguments(args);
     }
 
     default:
