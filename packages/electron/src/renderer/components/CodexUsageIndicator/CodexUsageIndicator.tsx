@@ -13,7 +13,10 @@ import {
   codexUsageAvailableAtom,
   codexUsageSessionColorAtom,
   codexUsageWeeklyColorAtom,
+  formatCompactTokenCount,
   formatResetTime,
+  getCodexContextUsagePercent,
+  getUsageColor,
 } from '../../store/atoms/codexUsageAtoms';
 import { useSetting } from '../../hooks/useSetting';
 import { CodexUsagePopover } from './CodexUsagePopover';
@@ -59,7 +62,13 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
   const limitsAvailable = !hasLoadError && (usage?.limitsAvailable ?? true);
   const sessionUtilization = hasLoadError ? 0 : usage?.fiveHour?.utilization ?? 0;
   const weeklyUtilization = hasLoadError ? 0 : usage?.sevenDay?.utilization ?? 0;
-  const sessionProgress = limitsAvailable ? clampUtilization(sessionUtilization) : 0;
+  const contextUtilization = getCodexContextUsagePercent(usage);
+  const hasContextFallback = !limitsAvailable && contextUtilization !== null;
+  const sessionProgress = limitsAvailable
+    ? clampUtilization(sessionUtilization)
+    : hasContextFallback
+      ? clampUtilization(contextUtilization)
+      : 0;
   const weeklyProgress = limitsAvailable ? clampUtilization(weeklyUtilization) : 0;
   const sessionStrokeDashoffset = OUTER_RING_CIRCUMFERENCE * (1 - sessionProgress / 100);
   const weeklyStrokeDashoffset = INNER_RING_CIRCUMFERENCE * (1 - weeklyProgress / 100);
@@ -71,21 +80,32 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
     muted: 'stroke-nim-muted',
   };
 
-  const effectiveSessionColor = limitsAvailable ? sessionColor : 'muted';
+  const effectiveSessionColor = limitsAvailable
+    ? sessionColor
+    : hasContextFallback
+      ? getUsageColor(contextUtilization)
+      : 'muted';
   const effectiveWeeklyColor = limitsAvailable ? weeklyColor : 'muted';
   const sessionStrokeColor = colorClasses[effectiveSessionColor] || colorClasses.muted;
   const weeklyStrokeColor = colorClasses[effectiveWeeklyColor] || colorClasses.muted;
 
+  const tokenTooltip = usage?.tokenUsage && hasContextFallback
+    ? `Codex context: ${Math.round(contextUtilization)}% used (${formatCompactTokenCount(usage.tokenUsage.totalTokens)} / ${formatCompactTokenCount(usage.tokenUsage.contextWindow ?? 0)} tokens)`
+    : null;
   const tooltipContent = usage?.error
     ? `Codex usage unavailable: ${usage.error}`
     : usage
       ? limitsAvailable
         ? `Codex: Session ${Math.round(sessionUtilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)}), weekly ${Math.round(weeklyUtilization)}% (resets ${formatResetTime(usage.sevenDay.resetsAt)})`
-        : 'Codex usage (limits unavailable)'
+        : tokenTooltip ?? 'Codex usage (limits unavailable)'
       : 'Codex usage unavailable';
 
-  const ariaLabel = usage && !usage.error && limitsAvailable
-    ? `Codex usage: session ${Math.round(sessionUtilization)} percent, weekly ${Math.round(weeklyUtilization)} percent`
+  const ariaLabel = usage && !usage.error
+    ? limitsAvailable
+      ? `Codex usage: session ${Math.round(sessionUtilization)} percent, weekly ${Math.round(weeklyUtilization)} percent`
+      : hasContextFallback
+        ? `Codex context usage: ${Math.round(contextUtilization)} percent`
+        : 'Codex Usage'
     : 'Codex Usage';
 
   return (

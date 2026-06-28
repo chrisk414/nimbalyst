@@ -64,6 +64,7 @@ import type {
   ItemPermissionsRequestApprovalParams,
   ItemStartedNotification,
   ThreadResumeResponse,
+  ThreadTokenUsageUpdatedNotification,
   ThreadStartParams,
   ThreadStartResponse,
   TokenUsage,
@@ -114,12 +115,26 @@ export interface CodexAppServerProtocolOptions {
   clientInfo?: { name: string; version: string };
 }
 
+export interface CodexAppServerStatusSnapshot {
+  initResponse: InitializeResponse;
+  threadStartResponse: ThreadStartResponse | ThreadResumeResponse | null;
+  threadReadResponse?: unknown;
+  accountResponse?: unknown;
+  rateLimitsResponse?: unknown;
+  configResponse?: unknown;
+  tokenUsage?: TokenUsage | null;
+  workspacePath: string;
+}
+
 interface AppServerSessionRaw {
   child: ChildProcessWithoutNullStreams;
   client: JsonRpcClient;
   threadId: string;
   options: SessionOptions;
   initResponse: InitializeResponse;
+  threadStartResponse: ThreadStartResponse | ThreadResumeResponse | null;
+  lastTokenUsage: TokenUsage | null;
+  lastRateLimitsResponse: unknown | null;
   /** Per-session dynamic tools registered for codex to call back into. */
   dynamicTools: DynamicToolSpec[];
   /** Snapshot of any uncompleted turn for abort handling. */
@@ -254,6 +269,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       throw new Error('[CodexAppServer] thread/start did not return a thread id');
     }
     raw.threadId = threadId;
+    raw.threadStartResponse = startResponse;
     // console.log('[CODEX][APPSERVER] thread started:', threadId);
     return {
       id: threadId,
@@ -292,6 +308,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     try {
       const resumeResponse = await raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams);
       raw.threadId = resumeResponse?.thread?.id ?? sessionId;
+      raw.threadStartResponse = resumeResponse;
       // console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
       return { id: raw.threadId, platform: this.platform, raw: raw as unknown as ProtocolSession['raw'] };
     } catch (err) {
@@ -308,6 +325,29 @@ export class CodexAppServerProtocol implements AgentProtocol {
    */
   async forkSession(_sessionId: string, options: SessionOptions): Promise<ProtocolSession> {
     return this.createSession(options);
+  }
+
+  async getStatusSnapshot(session: ProtocolSession): Promise<CodexAppServerStatusSnapshot> {
+    const raw = this.assertRaw(session);
+    const cwd = raw.threadStartResponse?.cwd ?? raw.options.workspacePath;
+
+    const [threadRead, account, rateLimits, config] = await Promise.allSettled([
+      raw.client.request('thread/read', { threadId: raw.threadId, includeTurns: false }),
+      raw.client.request('account/read', {}),
+      raw.client.request('account/rateLimits/read', null),
+      raw.client.request('config/read', { cwd, includeLayers: true }),
+    ]);
+
+    return {
+      initResponse: raw.initResponse,
+      threadStartResponse: raw.threadStartResponse,
+      threadReadResponse: settledValue(threadRead),
+      accountResponse: settledValue(account),
+      rateLimitsResponse: settledValue(rateLimits) ?? raw.lastRateLimitsResponse,
+      configResponse: settledValue(config),
+      tokenUsage: raw.lastTokenUsage,
+      workspacePath: raw.options.workspacePath,
+    };
   }
 
   async *sendMessage(session: ProtocolSession, message: ProtocolMessage): AsyncIterable<ProtocolEvent> {
@@ -343,6 +383,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // session) would double-process every notification: duplicate raw_event,
     // duplicate tool_call from a single item/completed, duplicate completion.
     unsubscribers.push(raw.client.onNotification(onNotification));
+    unsubscribers.push(raw.client.onClose((reason) => {
+      push({ kind: 'fail', error: new Error(reason) });
+    }));
 
     // Start the turn. Errors from the request itself are surfaced as fail.
     const turnInput = await this.buildInput(message);
@@ -487,6 +530,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
       threadId: '',
       options,
       initResponse,
+      threadStartResponse: null,
+      lastTokenUsage: null,
+      lastRateLimitsResponse: null,
       dynamicTools: this.extractDynamicTools(options),
       activeTurnId: null,
       stderrTail,
@@ -706,9 +752,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
         return;
       }
       case 'thread/tokenUsage/updated': {
-        const usage = params?.usage as TokenUsage | undefined;
+        const n = params as unknown as ThreadTokenUsageUpdatedNotification | undefined;
+        const usage = n?.tokenUsage ?? n?.usage;
+        if (usage) {
+          raw.lastTokenUsage = usage;
+        }
         const normalized = normalizeUsage(usage);
         if (normalized) setUsage(normalized);
+        return;
+      }
+      case 'account/rateLimits/updated': {
+        raw.lastRateLimitsResponse = params ?? null;
         return;
       }
       case 'turn/completed': {
@@ -1133,9 +1187,13 @@ function appendStderrTail(msg: string, raw: { stderrTail: string[] }): string {
 
 function normalizeUsage(u: TokenUsage | undefined): { input_tokens: number; output_tokens: number; total_tokens: number } | undefined {
   if (!u) return undefined;
-  const input = u.input_tokens ?? u.inputTokens ?? 0;
-  const output = u.output_tokens ?? u.outputTokens ?? 0;
-  const total = u.total_tokens ?? u.totalTokens ?? input + output;
+  const input = u.input_tokens ?? u.inputTokens ?? u.total?.inputTokens ?? 0;
+  const output = u.output_tokens ?? u.outputTokens ?? u.total?.outputTokens ?? 0;
+  const total = u.total_tokens ?? u.totalTokens ?? u.total?.totalTokens ?? input + output;
   if (input === 0 && output === 0 && total === 0) return undefined;
   return { input_tokens: input, output_tokens: output, total_tokens: total };
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | undefined {
+  return result.status === 'fulfilled' ? result.value : undefined;
 }

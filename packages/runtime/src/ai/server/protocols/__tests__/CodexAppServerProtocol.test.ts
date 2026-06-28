@@ -167,6 +167,51 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('requests account rate limits with null params for status snapshots', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-status' }, cwd: '/tmp/ws' } });
+    const session = await sessionPromise;
+
+    const snapshotPromise = protocol.getStatusSnapshot(session);
+
+    const threadReadReq = await nextWrittenMatching(child, 'thread/read');
+    const accountReadReq = await nextWrittenMatching(child, 'account/read');
+    const rateLimitsReq = await nextWrittenMatching(child, 'account/rateLimits/read');
+    const configReq = await nextWrittenMatching(child, 'config/read');
+
+    expect(rateLimitsReq).toHaveProperty('params', null);
+
+    child.emitLine({ id: threadReadReq.id, result: { thread: { id: 'thread-status' } } });
+    child.emitLine({ id: accountReadReq.id, result: { account: { type: 'chatgpt' } } });
+    child.emitLine({
+      id: rateLimitsReq.id,
+      result: {
+        rateLimitsByLimitId: {
+          codex: {
+            primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: null },
+            secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: null },
+          },
+        },
+      },
+    });
+    child.emitLine({ id: configReq.id, result: { config: {} } });
+
+    const snapshot = await snapshotPromise;
+    expect(snapshot.rateLimitsResponse).toMatchObject({
+      rateLimitsByLimitId: {
+        codex: {
+          secondary: { usedPercent: 10 },
+        },
+      },
+    });
+
+    protocol.cleanupSession(session);
+  });
+
   it('translates fileChange item/completed into a tool_call event with diff-based baselines', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
@@ -243,6 +288,40 @@ describe('CodexAppServerProtocol', () => {
 
     const errorEvent = events.find((e) => e.type === 'error');
     expect(errorEvent?.error).toContain('model unavailable');
+
+    protocol.cleanupSession(session);
+  });
+
+  it('surfaces app-server child exit during an active turn as an error event', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 't-exit' } } });
+    const session = await sessionPromise;
+
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const ev of protocol.sendMessage(session, { content: 'run a command' })) {
+        events.push(ev);
+      }
+    })();
+
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
+
+    child.stderr.write('FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n');
+    child.kill();
+
+    await expect(Promise.race([
+      collector,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('stream did not finish after child exit')), 500)),
+    ])).resolves.toBeUndefined();
+
+    const errorEvent = events.find((e) => e.type === 'error');
+    expect(errorEvent?.error).toContain('[CodexAppServer] child process exited');
+    expect(errorEvent?.error).toContain('JavaScript heap out of memory');
 
     protocol.cleanupSession(session);
   });

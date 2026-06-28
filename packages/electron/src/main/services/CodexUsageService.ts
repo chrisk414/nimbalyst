@@ -4,6 +4,7 @@
  * This service:
  * - Reads Codex CLI session files from ~/.codex/sessions/
  * - Extracts rate_limits data from token_count events in JSONL files
+ * - Accepts live Codex app-server status snapshots when available
  * - Implements activity-aware polling (active when using Codex, sleeps when idle)
  * - Broadcasts usage updates to renderer via IPC
  *
@@ -36,6 +37,7 @@ export interface CodexUsageData {
   tokenUsage?: {
     totalTokens: number;
     lastTokens: number | null;
+    contextWindow?: number | null;
   };
   limitsAvailable?: boolean;
   lastUpdated: number; // Unix timestamp
@@ -64,11 +66,18 @@ interface CodexRateLimits {
 interface CodexTokenUsage {
   totalTokens: number;
   lastTokens: number | null;
+  contextWindow?: number | null;
 }
 
 interface CodexUsageSnapshot {
   rateLimits: CodexRateLimits | null;
   tokenUsage: CodexTokenUsage | null;
+}
+
+interface AppServerRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins?: number;
+  resetsAt?: number;
 }
 
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
@@ -78,6 +87,7 @@ const MAX_FILES_TO_CHECK = 5; // Check up to N recent session files for rate_lim
 
 class CodexUsageServiceImpl {
   private cachedUsage: CodexUsageData | null = null;
+  private cachedUsageSource: 'app-server' | 'session-files' | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private lastActivityTime: number = 0;
   private isPolling: boolean = false;
@@ -94,7 +104,9 @@ class CodexUsageServiceImpl {
       // logger.main.info('[CodexUsageService] Waking up due to activity');
       this.isSleeping = false;
       this.startPolling();
-      await this.refresh();
+      if (this.cachedUsageSource !== 'app-server') {
+        await this.refresh();
+      }
     }
   }
 
@@ -102,8 +114,24 @@ class CodexUsageServiceImpl {
     return this.cachedUsage;
   }
 
+  updateFromAppServerStatusSnapshot(snapshot: unknown): CodexUsageData | null {
+    const usageData = convertAppServerStatusSnapshotToCodexUsageData(snapshot);
+    if (!usageData) {
+      return null;
+    }
+
+    this.cachedUsage = usageData;
+    this.cachedUsageSource = 'app-server';
+    this.broadcastUpdate();
+    return usageData;
+  }
+
   async refresh(): Promise<CodexUsageData> {
     try {
+      if (this.cachedUsage && this.cachedUsageSource === 'app-server') {
+        return this.cachedUsage;
+      }
+
       const snapshot = await this.findLatestUsageSnapshot();
       logger.main.debug(
         '[CodexUsageService] findLatestUsageSnapshot result:',
@@ -117,6 +145,7 @@ class CodexUsageServiceImpl {
           error: 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
         };
         this.cachedUsage = noData;
+        this.cachedUsageSource = 'session-files';
         this.broadcastUpdate();
         return noData;
       }
@@ -130,6 +159,7 @@ class CodexUsageServiceImpl {
           lastUpdated: Date.now(),
         };
         this.cachedUsage = usageData;
+        this.cachedUsageSource = 'session-files';
         this.broadcastUpdate();
         return usageData;
       }
@@ -140,6 +170,7 @@ class CodexUsageServiceImpl {
         usageData.tokenUsage = snapshot.tokenUsage;
       }
       this.cachedUsage = usageData;
+      this.cachedUsageSource = 'session-files';
       this.broadcastUpdate();
       return usageData;
     } catch (error) {
@@ -151,6 +182,7 @@ class CodexUsageServiceImpl {
         error: error instanceof Error ? error.message : 'Unknown error reading Codex session files',
       };
       this.cachedUsage = errorData;
+      this.cachedUsageSource = 'session-files';
       this.broadcastUpdate();
       return errorData;
     }
@@ -453,6 +485,164 @@ export function filterRateLimitsByExpiry(
     primary: primaryActive ? primary : null,
     secondary: secondaryActive ? secondary : null,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readAppServerRateLimitWindow(value: unknown): AppServerRateLimitWindow | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const usedPercent = readFiniteNumber(record.usedPercent);
+  if (usedPercent === undefined) return null;
+
+  return {
+    usedPercent,
+    windowDurationMins: readFiniteNumber(record.windowDurationMins),
+    resetsAt: readFiniteNumber(record.resetsAt),
+  };
+}
+
+function pickCodexRateLimitBucket(rateLimitsResponse: unknown): Record<string, unknown> | null {
+  const root = asRecord(rateLimitsResponse);
+  if (!root) return null;
+
+  const byId = asRecord(root.rateLimitsByLimitId);
+  if (byId) {
+    const codex = asRecord(byId.codex);
+    if (codex) return codex;
+
+    for (const value of Object.values(byId)) {
+      const record = asRecord(value);
+      if (record) return record;
+    }
+  }
+
+  return asRecord(root.rateLimits) ?? root;
+}
+
+function windowMatches(window: AppServerRateLimitWindow | null, minutes: number): boolean {
+  return window?.windowDurationMins === minutes;
+}
+
+function normalizeAppServerRateLimitWindow(
+  window: AppServerRateLimitWindow | null
+): { utilization: number; resetsAt: string | null } {
+  return {
+    utilization: window?.usedPercent ?? 0,
+    resetsAt: window?.resetsAt ? new Date(window.resetsAt * 1000).toISOString() : null,
+  };
+}
+
+function filterAppServerWindowByExpiry(
+  window: AppServerRateLimitWindow | null,
+  nowSeconds: number
+): AppServerRateLimitWindow | null {
+  if (!window) return null;
+  return window.resetsAt === undefined || window.resetsAt > nowSeconds ? window : null;
+}
+
+function extractAppServerRateLimitWindows(rateLimitsResponse: unknown): {
+  fiveHour: AppServerRateLimitWindow | null;
+  sevenDay: AppServerRateLimitWindow | null;
+} | null {
+  const bucket = pickCodexRateLimitBucket(rateLimitsResponse);
+  if (!bucket) return null;
+
+  const primary = readAppServerRateLimitWindow(bucket.primary);
+  const secondary = readAppServerRateLimitWindow(bucket.secondary);
+  if (!primary && !secondary) return null;
+
+  const windows = [primary, secondary];
+  return {
+    fiveHour: windows.find((window) => windowMatches(window, 300)) ?? primary,
+    sevenDay: windows.find((window) => windowMatches(window, 10080)) ?? secondary,
+  };
+}
+
+function extractTokenCount(value: unknown): number | undefined {
+  const record = asRecord(value);
+  return readFiniteNumber(record?.totalTokens)
+    ?? readFiniteNumber(record?.total_tokens)
+    ?? readFiniteNumber(value);
+}
+
+function extractAppServerTokenUsage(snapshot: Record<string, unknown>): CodexTokenUsage | null {
+  const tokenUsage = asRecord(snapshot.tokenUsage);
+  if (!tokenUsage) return null;
+
+  const total = asRecord(tokenUsage.total);
+  const last = asRecord(tokenUsage.last);
+  const config = asRecord(asRecord(snapshot.configResponse)?.config);
+  const totalTokens = extractTokenCount(total)
+    ?? readFiniteNumber(tokenUsage.totalTokens)
+    ?? readFiniteNumber(tokenUsage.total_tokens);
+
+  if (totalTokens === undefined) return null;
+
+  const lastTokens = extractTokenCount(last)
+    ?? readFiniteNumber(tokenUsage.lastTokens)
+    ?? readFiniteNumber(tokenUsage.last_tokens)
+    ?? null;
+
+  const contextWindow = readFiniteNumber(tokenUsage.modelContextWindow)
+    ?? readFiniteNumber(config?.model_context_window)
+    ?? null;
+
+  return { totalTokens, lastTokens, contextWindow };
+}
+
+/**
+ * Convert the live Codex app-server status snapshot used by /status and /usage
+ * into the renderer's existing CodexUsageData shape. Exported for unit tests;
+ * production callers should use codexUsageService.updateFromAppServerStatusSnapshot.
+ */
+export function convertAppServerStatusSnapshotToCodexUsageData(
+  snapshot: unknown,
+  nowMs = Date.now()
+): CodexUsageData | null {
+  const root = asRecord(snapshot);
+  if (!root) return null;
+
+  const rawWindows = extractAppServerRateLimitWindows(root.rateLimitsResponse);
+  const nowSeconds = nowMs / 1000;
+  const windows = rawWindows
+    ? {
+        fiveHour: filterAppServerWindowByExpiry(rawWindows.fiveHour, nowSeconds),
+        sevenDay: filterAppServerWindowByExpiry(rawWindows.sevenDay, nowSeconds),
+      }
+    : null;
+  const tokenUsage = extractAppServerTokenUsage(root);
+  const hasActiveLimits = Boolean(windows?.fiveHour || windows?.sevenDay);
+  if (!hasActiveLimits && !tokenUsage) return null;
+
+  const usageData: CodexUsageData = hasActiveLimits && windows
+    ? {
+        fiveHour: normalizeAppServerRateLimitWindow(windows.fiveHour),
+        sevenDay: normalizeAppServerRateLimitWindow(windows.sevenDay),
+        limitsAvailable: true,
+        lastUpdated: nowMs,
+      }
+    : {
+        fiveHour: { utilization: 0, resetsAt: null },
+        sevenDay: { utilization: 0, resetsAt: null },
+        limitsAvailable: false,
+        lastUpdated: nowMs,
+      };
+
+  if (tokenUsage) {
+    usageData.tokenUsage = tokenUsage;
+  }
+
+  return usageData;
 }
 
 // Exported only for tests. Do not consume from production code.

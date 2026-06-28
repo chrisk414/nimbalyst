@@ -14,11 +14,15 @@
  * still-active sibling window.
  */
 import { describe, it, expect } from 'vitest';
-import { filterRateLimitsByExpiry } from '../CodexUsageService';
+import {
+  convertAppServerStatusSnapshotToCodexUsageData,
+  filterRateLimitsByExpiry,
+} from '../CodexUsageService';
 
 // 2026-05-14T12:00:00Z, in Unix seconds. Each test pins a specific "now"
 // relative to this anchor so resets_at math is human-readable.
 const NOW_SECONDS = 1778832000;
+const NOW_MS = NOW_SECONDS * 1000;
 const FIVE_HOURS = 5 * 60 * 60;
 const SEVEN_DAYS = 7 * 24 * 60 * 60;
 
@@ -130,5 +134,108 @@ describe('filterRateLimitsByExpiry', () => {
     const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
     expect(out).not.toBeNull();
     expect(out!.limit_id).toBe('usage-bucket-7');
+  });
+});
+
+describe('convertAppServerStatusSnapshotToCodexUsageData', () => {
+  it('maps Codex app-server rate limits and token usage into renderer usage data', () => {
+    const out = convertAppServerStatusSnapshotToCodexUsageData({
+      rateLimitsResponse: {
+        rateLimitsByLimitId: {
+          codex: {
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1782587965 },
+            secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: 1783138758 },
+          },
+        },
+      },
+      tokenUsage: {
+        total: { totalTokens: 42000 },
+        last: { totalTokens: 1200 },
+      },
+    }, NOW_MS);
+
+    expect(out).toEqual({
+      fiveHour: {
+        utilization: 25,
+        resetsAt: new Date(1782587965 * 1000).toISOString(),
+      },
+      sevenDay: {
+        utilization: 10,
+        resetsAt: new Date(1783138758 * 1000).toISOString(),
+      },
+      limitsAvailable: true,
+      lastUpdated: NOW_MS,
+      tokenUsage: {
+        totalTokens: 42000,
+        lastTokens: 1200,
+        contextWindow: null,
+      },
+    });
+  });
+
+  it('keeps token-only app-server usage visible when limits are unavailable', () => {
+    const out = convertAppServerStatusSnapshotToCodexUsageData({
+      tokenUsage: {
+        totalTokens: 9000,
+      },
+    }, NOW_MS);
+
+    expect(out).toEqual({
+      fiveHour: { utilization: 0, resetsAt: null },
+      sevenDay: { utilization: 0, resetsAt: null },
+      limitsAvailable: false,
+      lastUpdated: NOW_MS,
+      tokenUsage: {
+        totalTokens: 9000,
+        lastTokens: null,
+        contextWindow: null,
+      },
+    });
+  });
+
+  it('extracts app-server context window size for token usage fallback rendering', () => {
+    const out = convertAppServerStatusSnapshotToCodexUsageData({
+      tokenUsage: {
+        total: { totalTokens: 42000 },
+        modelContextWindow: 100000,
+      },
+    }, NOW_MS);
+
+    expect(out?.tokenUsage).toEqual({
+      totalTokens: 42000,
+      lastTokens: null,
+      contextWindow: 100000,
+    });
+  });
+
+  it('drops expired app-server windows while preserving active sibling windows', () => {
+    const out = convertAppServerStatusSnapshotToCodexUsageData({
+      rateLimitsResponse: {
+        rateLimitsByLimitId: {
+          codex: {
+            primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: NOW_SECONDS - 60 },
+            secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: NOW_SECONDS + SEVEN_DAYS },
+          },
+        },
+      },
+    }, NOW_MS);
+
+    expect(out).not.toBeNull();
+    expect(out!.limitsAvailable).toBe(true);
+    expect(out!.fiveHour).toEqual({ utilization: 0, resetsAt: null });
+    expect(out!.sevenDay).toEqual({
+      utilization: 20,
+      resetsAt: new Date((NOW_SECONDS + SEVEN_DAYS) * 1000).toISOString(),
+    });
+  });
+
+  it('returns null when the app-server snapshot has no usable usage data', () => {
+    expect(convertAppServerStatusSnapshotToCodexUsageData({
+      rateLimitsResponse: {
+        rateLimitsByLimitId: {
+          codex: {},
+        },
+      },
+    }, NOW_MS)).toBeNull();
   });
 });

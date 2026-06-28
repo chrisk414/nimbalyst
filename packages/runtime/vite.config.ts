@@ -63,6 +63,7 @@ export default defineConfig(({ mode }) => ({
     lib: {
       entry: {
         index: resolve(__dirname, 'src/index.ts'),
+        'ai/codexSlashCommands': resolve(__dirname, 'src/ai/codexSlashCommands.ts'),
         'ui/index': resolve(__dirname, 'src/ui/index.ts'),
       },
       name: 'NimbalystRuntime',

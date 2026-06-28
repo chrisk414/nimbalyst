@@ -20,6 +20,7 @@ import {
   isAskUserQuestionProvider,
   isAgentProvider,
   isSlashCommandCatalogProvider,
+  isSlashCommandExecutionProvider,
   ClaudeCodeProvider,
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
@@ -84,6 +85,7 @@ import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { getNimbalystCodexSlashCommandNamesForProvider } from '@nimbalyst/runtime/ai/codexSlashCommands';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
@@ -116,6 +118,7 @@ import {
 import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
+import { codexUsageService } from '../CodexUsageService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
@@ -162,6 +165,7 @@ export class AIService {
 
   // Owns the streaming send-message lifecycle (extracted from setupIpcHandlers).
   private streamingHandler: MessageStreamingHandler;
+  private readonly codexUsageSnapshotListeners = new WeakMap<AIProvider, (event: unknown) => void>();
 
   constructor(sessionStore: SessionStore) {
     logger.main.info('[AIService] Constructor called');
@@ -1391,6 +1395,70 @@ export class AIService {
     return provider;
   }
 
+  ensureCodexUsageSnapshotListener(provider: AIProvider): void {
+    if (this.codexUsageSnapshotListeners.has(provider)) {
+      return;
+    }
+
+    const listener = (event: unknown) => {
+      try {
+        const payload = event && typeof event === 'object' && !Array.isArray(event)
+          ? event as { snapshot?: unknown }
+          : null;
+        const snapshot = payload && 'snapshot' in payload ? payload.snapshot : event;
+        codexUsageService.updateFromAppServerStatusSnapshot(snapshot);
+      } catch (error) {
+        logger.main.error('[AIService] Failed to update Codex usage from app-server snapshot:', error);
+      }
+    };
+
+    provider.on('codexUsageSnapshot', listener);
+    this.codexUsageSnapshotListeners.set(provider, listener);
+  }
+
+  private async initializeOpenAICodexProviderForSession(
+    provider: AIProvider,
+    session: SessionData,
+    workspacePath?: string
+  ): Promise<void> {
+    const effectiveWorkspacePath = session.workspacePath || workspacePath;
+    const apiKey = this.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+    const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+    const initConfig: any = {
+      apiKey,
+      maxTokens: (session.providerConfig as any)?.maxTokens,
+      temperature: (session.providerConfig as any)?.temperature,
+      ...(effortLevel && { effortLevel }),
+    };
+
+    const fullModel = session.model || session.providerConfig?.model;
+    if (fullModel) {
+      const modelForProvider = extractModelForProvider(fullModel, session.provider as AIProviderType);
+      if (modelForProvider !== null) {
+        initConfig.model = modelForProvider;
+      }
+    } else {
+      const defaultModel = await ModelRegistry.getDefaultModel(session.provider as AIProviderType);
+      if (defaultModel) {
+        const defaultModelForProvider = extractModelForProvider(defaultModel, session.provider as AIProviderType);
+        if (defaultModelForProvider !== null) {
+          initConfig.model = defaultModelForProvider;
+        }
+      }
+    }
+
+    await provider.initialize(initConfig);
+    this.ensureCodexUsageSnapshotListener(provider);
+
+    if (session.providerSessionId && provider.setProviderSessionData) {
+      provider.setProviderSessionData(session.id, {
+        providerSessionId: session.providerSessionId,
+        claudeSessionId: session.providerSessionId,
+        codexThreadId: session.providerSessionId,
+      });
+    }
+  }
+
   private getProviderWorkflowCatalog(request: {
     sessionId?: string;
     provider?: string | null;
@@ -1433,7 +1501,7 @@ export class AIService {
 
     if (request.provider === 'openai-codex' || request.provider === 'openai-codex-acp') {
       return {
-        commands: OpenAICodexProvider.getKnownSlashCommands(),
+        commands: getNimbalystCodexSlashCommandNamesForProvider(request.provider),
         skills: [],
       };
     }
@@ -1910,6 +1978,68 @@ export class AIService {
     // Stored on this.sendMessageHandler so queue processing and other paths can re-invoke it.
     this.sendMessageHandler = this.streamingHandler.handle;
     safeHandle('ai:sendMessage', this.sendMessageHandler);
+
+    safeHandle('ai:runProviderSlashCommand', async (
+      _event,
+      request: {
+        sessionId?: string;
+        workspacePath?: string;
+        command?: string;
+        args?: string;
+        documentContext?: DocumentContext;
+      }
+    ) => {
+      const sessionId = request?.sessionId;
+      const command = request?.command;
+      if (!sessionId || !command) {
+        return { success: false, error: 'sessionId and command are required' };
+      }
+
+      const session = await this.sessionManager.loadSession(sessionId, request.workspacePath);
+      if (!session) {
+        return { success: false, error: 'Session not found' };
+      }
+      if (session.provider !== 'openai-codex') {
+        return { success: false, error: `/${command} is not provider-executed for ${session.provider}` };
+      }
+
+      const provider = await this.getProviderForSession(session);
+      if (!provider) {
+        return { success: false, error: 'Provider not available' };
+      }
+
+      try {
+        await this.initializeOpenAICodexProviderForSession(provider, session, request.workspacePath);
+        if (!isSlashCommandExecutionProvider(provider)) {
+          return { success: false, error: 'Provider does not support slash-command execution' };
+        }
+
+        const result = await provider.runSlashCommand({
+          command,
+          args: request.args,
+          sessionId,
+          workspacePath: session.workspacePath || request.workspacePath || '',
+          documentContext: request.documentContext,
+        });
+        if (result.codexStatusSnapshot) {
+          codexUsageService.updateFromAppServerStatusSnapshot(result.codexStatusSnapshot);
+        }
+
+        const providerData = provider.getProviderSessionData?.(session.id);
+        const providerSessionId =
+          result.providerSessionId ||
+          providerData?.providerSessionId ||
+          providerData?.codexThreadId;
+        if (providerSessionId && providerSessionId !== session.providerSessionId) {
+          await this.sessionManager.updateProviderSessionData(session.id, providerSessionId);
+        }
+
+        return { success: true, ...result, providerSessionId };
+      } catch (error) {
+        logger.main.error('[AIService] Provider slash command failed:', error);
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
 
     // Get session history (full session data with messages - slow)
     safeHandle('ai:getSessions', async (event, workspacePath?: string) => {

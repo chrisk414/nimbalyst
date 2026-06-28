@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import { homedir } from 'os';
 import * as path from 'path';
+import { getNimbalystCodexSlashCommandDefinition } from '@nimbalyst/runtime/ai/codexSlashCommands';
 import { parseCommandFile, parseSkillFile, type SlashCommand, validateCommand } from './CommandFileParser';
 import { getAllExtensionDirectories, getNativeClaudePluginPaths } from '../ipc/ExtensionHandlers';
 import {
@@ -893,14 +894,12 @@ export class AgentWorkflowService {
         ? 'Codex'
         : 'Claude';
     const commandDescriptions: Record<string, string> = usesCodexStyleAgentWorkflows(provider)
-      ? {
-          compact: 'Summarize the current conversation to free context while preserving key points',
-          diff: 'Show the current Git diff, including untracked files',
-          init: 'Generate an AGENTS.md scaffold for the current directory',
-          mcp: 'List the configured MCP tools available in this Codex session',
-          review: 'Ask Codex to review the current working tree',
-          status: 'Display active model, sandbox, and session token usage information',
-        }
+      ? Object.fromEntries(
+          nativeCommands.map(name => [
+            name,
+            getNimbalystCodexSlashCommandDefinition(name)?.description || `Execute ${name} command`,
+          ])
+        )
       : {
           compact: 'Reduces conversation history by summarizing older messages',
           clear: 'Start a new conversation session',

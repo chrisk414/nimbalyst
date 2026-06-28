@@ -5,6 +5,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
+import {
+  getNimbalystCodexSlashCommandDefinition,
+  getNimbalystCodexSlashCommandNames,
+} from '@nimbalyst/runtime/ai/codexSlashCommands';
 import { parseCommandFile, parseSkillFile, SlashCommand, validateCommand } from './CommandFileParser';
 
 // Re-export SlashCommand type for use by handlers
@@ -71,14 +75,7 @@ export class SlashCommandService {
    */
   private getKnownBuiltinCommands(provider: string): string[] {
     if (provider === 'openai-codex') {
-      return [
-        'compact',
-        'diff',
-        'init',
-        'mcp',
-        'review',
-        'status',
-      ];
+      return getNimbalystCodexSlashCommandNames();
     }
 
     return [
@@ -211,15 +208,7 @@ export class SlashCommandService {
    */
   private getBuiltinCommandDescription(name: string, provider: string): string {
     if (provider === 'openai-codex') {
-      const descriptions: Record<string, string> = {
-        'compact': 'Summarize the current conversation to free context while preserving key points',
-        'diff': 'Show the current Git diff, including untracked files',
-        'init': 'Generate an AGENTS.md scaffold for the current directory',
-        'mcp': 'List the configured MCP tools available in this Codex session',
-        'review': 'Ask Codex to review the current working tree',
-        'status': 'Display active model, sandbox, and session token usage information',
-      };
-      return descriptions[name] || `Execute ${name} command`;
+      return getNimbalystCodexSlashCommandDefinition(name)?.description || `Execute ${name} command`;
     }
 
     const descriptions: Record<string, string> = {

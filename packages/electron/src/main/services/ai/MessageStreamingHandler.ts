@@ -156,6 +156,7 @@ interface AIServiceInternal {
     workspacePath: string,
     event: Electron.IpcMainInvokeEvent,
   ): Promise<void>;
+  ensureCodexUsageSnapshotListener(provider: AIProvider): void;
   createToolHandler(
     webContents: Electron.WebContents,
     documentContext?: DocumentContext,
@@ -1143,6 +1144,10 @@ export class MessageStreamingHandler {
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
         });
+      }
+
+      if (session.provider === 'openai-codex') {
+        this.svc.ensureCodexUsageSnapshotListener(provider);
       }
 
       // Attach @ mentioned files for non-agent providers

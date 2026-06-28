@@ -63,6 +63,7 @@ function getCommandIcon(command: SlashCommandEntry): string {
       'review': 'rate_review',
       'security-review': 'security',
       'status': 'info',
+      'usage': 'monitoring',
     };
     return builtinIcons[command.name] || 'bolt';
   }

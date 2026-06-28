@@ -34,6 +34,36 @@ export interface ExtensionToolDefinition {
 }
 const extensionToolsByWorkspace = new Map<string, ExtensionToolDefinition[]>();
 
+function getLiveMappedWindowId(workspacePath: string): number | null {
+  const windowId = workspaceToWindowMap.get(workspacePath);
+  if (windowId === undefined) {
+    return null;
+  }
+
+  const window = BrowserWindow.fromId(windowId);
+  if (window && !window.isDestroyed()) {
+    return windowId;
+  }
+
+  workspaceToWindowMap.delete(workspacePath);
+  console.warn(
+    `[MCP Server] Removed stale window mapping for workspace ${workspacePath}: window ${windowId}`
+  );
+  return null;
+}
+
+function cacheLiveWindowId(
+  workspacePath: string,
+  window: BrowserWindow | null | undefined
+): number | null {
+  if (!window || window.isDestroyed()) {
+    return null;
+  }
+
+  workspaceToWindowMap.set(workspacePath, window.id);
+  return window.id;
+}
+
 /**
  * Find the window ID for a given workspace path, resolving worktree paths to their parent project.
  *
@@ -48,17 +78,16 @@ export async function findWindowIdForWorkspacePath(
   workspacePath: string
 ): Promise<number | null> {
   // First try direct lookup - this works for regular workspaces
-  let windowId = workspaceToWindowMap.get(workspacePath);
-  if (windowId !== undefined) {
+  let windowId = getLiveMappedWindowId(workspacePath);
+  if (windowId !== null) {
     return windowId;
   }
 
   // Try findWindowByWorkspace directly
   let targetWindow = findWindowByWorkspace(workspacePath);
-  if (targetWindow && !targetWindow.isDestroyed()) {
-    // Cache the mapping for future lookups
-    workspaceToWindowMap.set(workspacePath, targetWindow.id);
-    return targetWindow.id;
+  windowId = cacheLiveWindowId(workspacePath, targetWindow);
+  if (windowId !== null) {
+    return windowId;
   }
 
   // Check if this might be a worktree path
@@ -66,14 +95,14 @@ export async function findWindowIdForWorkspacePath(
   if (worktreeToProjectPathCache.has(workspacePath)) {
     const cachedProjectPath = worktreeToProjectPathCache.get(workspacePath);
     if (cachedProjectPath) {
-      windowId = workspaceToWindowMap.get(cachedProjectPath);
-      if (windowId !== undefined) {
+      windowId = getLiveMappedWindowId(cachedProjectPath);
+      if (windowId !== null) {
         return windowId;
       }
       targetWindow = findWindowByWorkspace(cachedProjectPath);
-      if (targetWindow && !targetWindow.isDestroyed()) {
-        workspaceToWindowMap.set(cachedProjectPath, targetWindow.id);
-        return targetWindow.id;
+      windowId = cacheLiveWindowId(cachedProjectPath, targetWindow);
+      if (windowId !== null) {
+        return windowId;
       }
     }
     // cachedProjectPath is null means we already checked and it's not a worktree
@@ -96,14 +125,14 @@ export async function findWindowIdForWorkspacePath(
         `[MCP Server] Resolved worktree path ${workspacePath} -> project path ${projectPath}`
       );
 
-      windowId = workspaceToWindowMap.get(projectPath);
-      if (windowId !== undefined) {
+      windowId = getLiveMappedWindowId(projectPath);
+      if (windowId !== null) {
         return windowId;
       }
       targetWindow = findWindowByWorkspace(projectPath);
-      if (targetWindow && !targetWindow.isDestroyed()) {
-        workspaceToWindowMap.set(projectPath, targetWindow.id);
-        return targetWindow.id;
+      windowId = cacheLiveWindowId(projectPath, targetWindow);
+      if (windowId !== null) {
+        return windowId;
       }
     } else {
       // Not a worktree - cache the negative result
@@ -175,7 +204,7 @@ export async function findWindowForFilePath(
 
   // Get the window by ID
   const window = BrowserWindow.fromId(windowId);
-  if (!window) {
+  if (!window || window.isDestroyed()) {
     // Clean up stale mapping
     workspaceToWindowMap.delete(targetWorkspacePath);
     throw new Error(

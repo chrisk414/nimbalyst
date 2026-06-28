@@ -152,13 +152,12 @@ description: Should not appear in Codex discovery
     const commands = await service.listCommands({ provider: 'openai-codex' });
     const names = commands.map(cmd => cmd.name);
 
-    expect(names).toEqual(expect.arrayContaining([
-      'compact',
+    expect(names).toEqual([
       'diff',
       'init',
-      'mcp',
       'review',
       'status',
-    ]));
+      'usage',
+    ]);
   });
 });

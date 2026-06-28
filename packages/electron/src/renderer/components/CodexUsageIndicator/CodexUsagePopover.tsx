@@ -11,7 +11,10 @@ import {
   codexUsageAtom,
   codexUsageSessionColorAtom,
   codexUsageWeeklyColorAtom,
+  formatCompactTokenCount,
   formatResetTime,
+  getCodexContextUsagePercent,
+  getUsageColor,
 } from '../../store/atoms/codexUsageAtoms';
 import { useSetSetting } from '../../hooks/useSetting';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
@@ -92,6 +95,43 @@ const UsageSection: React.FC<UsageSectionProps> = ({
   );
 };
 
+const ContextUsageSection: React.FC<{
+  utilization: number;
+  totalTokens: number;
+  contextWindow: number;
+}> = ({ utilization, totalTokens, contextWindow }) => {
+  const color = getUsageColor(utilization);
+  const colorClasses: Record<string, { text: string; bar: string }> = {
+    green: { text: 'text-green-500', bar: 'bg-green-500' },
+    yellow: { text: 'text-yellow-500', bar: 'bg-yellow-500' },
+    red: { text: 'text-red-500', bar: 'bg-red-500' },
+  };
+  const colors = colorClasses[color];
+
+  return (
+    <div className="mb-4 last:mb-0">
+      <div className="flex justify-between items-baseline mb-1">
+        <div>
+          <div className="text-[13px] font-semibold text-nim">Context</div>
+          <div className="text-[11px] text-nim-muted">Current context window</div>
+        </div>
+        <div className={`text-[16px] font-semibold ${colors.text}`}>
+          {Math.round(utilization)}%
+        </div>
+      </div>
+      <div className="h-1.5 bg-nim-tertiary rounded-full overflow-hidden mb-1.5">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${colors.bar}`}
+          style={{ width: `${Math.min(utilization, 100)}%` }}
+        />
+      </div>
+      <div className="text-[11px] text-nim-muted">
+        {formatCompactTokenCount(totalTokens)} / {formatCompactTokenCount(contextWindow)} tokens
+      </div>
+    </div>
+  );
+};
+
 export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   anchorRef,
   onClose,
@@ -130,6 +170,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   }
 
   const limitsAvailable = usage.limitsAvailable ?? true;
+  const contextUtilization = getCodexContextUsagePercent(usage);
 
   // Determine window durations from the data
   const sessionWindowMs = 5 * 60 * 60 * 1000; // 5 hours
@@ -186,25 +227,36 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
             <>
               {!limitsAvailable && (
                 <div className="mb-3 text-[12px] text-nim-muted">
-                  Usage detected, but Codex limits are unavailable in recent session data.
+                  Codex rate limits are unavailable; showing context usage when reported.
                 </div>
               )}
-              <UsageSection
-                title="Session"
-                subtitle="5-hour window"
-                utilization={usage.fiveHour.utilization}
-                resetsAt={usage.fiveHour.resetsAt}
-                color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={sessionWindowMs}
-              />
-              <UsageSection
-                title="Weekly"
-                subtitle="7-day window"
-                utilization={usage.sevenDay.utilization}
-                resetsAt={usage.sevenDay.resetsAt}
-                color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={weeklyWindowMs}
-              />
+              {limitsAvailable && (
+                <>
+                  <UsageSection
+                    title="Session"
+                    subtitle="5-hour window"
+                    utilization={usage.fiveHour.utilization}
+                    resetsAt={usage.fiveHour.resetsAt}
+                    color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
+                    windowDurationMs={sessionWindowMs}
+                  />
+                  <UsageSection
+                    title="Weekly"
+                    subtitle="7-day window"
+                    utilization={usage.sevenDay.utilization}
+                    resetsAt={usage.sevenDay.resetsAt}
+                    color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
+                    windowDurationMs={weeklyWindowMs}
+                  />
+                </>
+              )}
+              {contextUtilization !== null && usage.tokenUsage?.contextWindow && (
+                <ContextUsageSection
+                  utilization={contextUtilization}
+                  totalTokens={usage.tokenUsage.totalTokens}
+                  contextWindow={usage.tokenUsage.contextWindow}
+                />
+              )}
             </>
           )}
         </div>

@@ -54,6 +54,24 @@ export interface SlashCommandCatalogProvider {
   getSkills?(): string[];
 }
 
+export interface ProviderSlashCommandOptions {
+  command: string;
+  args?: string;
+  sessionId: string;
+  workspacePath: string;
+  documentContext?: DocumentContext;
+}
+
+export interface ProviderSlashCommandResult {
+  content: string;
+  providerSessionId?: string;
+  codexStatusSnapshot?: unknown;
+}
+
+export interface SlashCommandExecutionProvider {
+  runSlashCommand(options: ProviderSlashCommandOptions): Promise<ProviderSlashCommandResult>;
+}
+
 export function isSlashCommandCatalogProvider(
   provider: AIProvider | null | undefined
 ): provider is AIProvider & SlashCommandCatalogProvider {
@@ -61,6 +79,12 @@ export function isSlashCommandCatalogProvider(
     typeof (provider as any).getSlashCommands === 'function' ||
     typeof (provider as any).getSkills === 'function'
   );
+}
+
+export function isSlashCommandExecutionProvider(
+  provider: AIProvider | null | undefined
+): provider is AIProvider & SlashCommandExecutionProvider {
+  return !!provider && typeof (provider as any).runSlashCommand === 'function';
 }
 
 export interface AIProvider extends EventEmitter {

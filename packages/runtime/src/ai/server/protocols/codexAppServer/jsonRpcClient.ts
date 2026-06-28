@@ -21,6 +21,7 @@ import type {
 } from './types';
 
 export type NotificationHandler = (method: string, params: unknown) => void;
+export type CloseHandler = (reason: string) => void;
 
 export type ServerRequestHandler = (
   params: unknown,
@@ -47,6 +48,8 @@ export class JsonRpcClient {
   private readonly defaultTimeoutMs: number;
   private readonly logger: { log: (msg: string, ...args: unknown[]) => void; warn: (msg: string, ...args: unknown[]) => void };
   private closed = false;
+  private closeReason = '[CodexAppServer] client closed';
+  private readonly closeHandlers = new Set<CloseHandler>();
 
   constructor(
     private readonly child: ChildProcessWithoutNullStreams,
@@ -74,6 +77,17 @@ export class JsonRpcClient {
     this.notificationHandlers.add(handler);
     return () => {
       this.notificationHandlers.delete(handler);
+    };
+  }
+
+  onClose(handler: CloseHandler): () => void {
+    if (this.closed) {
+      queueMicrotask(() => handler(this.closeReason));
+      return () => {};
+    }
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
     };
   }
 
@@ -117,12 +131,18 @@ export class JsonRpcClient {
   close(reason?: string): void {
     if (this.closed) return;
     this.closed = true;
-    const error = new Error(reason ?? '[CodexAppServer] client closed');
+    this.closeReason = reason ?? '[CodexAppServer] client closed';
+    const error = new Error(this.closeReason);
     for (const [id, p] of this.pending) {
       if (p.timer) clearTimeout(p.timer);
       p.reject(error);
       this.pending.delete(id);
     }
+    for (const handler of this.closeHandlers) {
+      try { handler(this.closeReason); }
+      catch (err) { this.logger.warn('[CodexAppServer] close handler threw:', err); }
+    }
+    this.closeHandlers.clear();
   }
 
   private writeLine(line: string): void {

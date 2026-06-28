@@ -58,6 +58,10 @@
       "import": "./dist/ai/modelConstants.js",
       "types": "./dist/ai/modelConstants.d.ts"
     },
+    "./ai/codexSlashCommands": {
+      "import": "./dist/ai/codexSlashCommands.js",
+      "types": "./dist/ai/codexSlashCommands.d.ts"
+    },
     "./ui/AgentTranscript": {
       "import": "./dist/ui/AgentTranscript/index.js",
       "types": "./dist/ui/AgentTranscript/index.d.ts"

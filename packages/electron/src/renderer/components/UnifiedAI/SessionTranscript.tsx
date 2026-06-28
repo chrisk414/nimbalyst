@@ -18,6 +18,12 @@ import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect,
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import {
+  buildCodexSlashCommandPrompt,
+  getNimbalystCodexSlashCommandDefinition,
+  getNimbalystCodexSlashCommandNamesForProvider,
+  isKnownCodexCliSlashCommand,
+} from '@nimbalyst/runtime/ai/codexSlashCommands';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
 import { ClaudeCliNotInstalledNotice } from './ClaudeCliNotInstalledNotice';
@@ -32,7 +38,7 @@ import { customEditorRegistry } from '../CustomEditors/registry';
 import { useDialog } from '../../contexts/DialogContext';
 import { FileGutter } from '../AIChat/FileGutter';
 import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners';
-import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
+import { recordCodexActivity, refreshCodexUsage } from '../../store/listeners/codexUsageListeners';
 import { PendingReviewBanner } from '../AIChat/PendingReviewBanner';
 import { WakeupBanner } from '../AIChat/WakeupBanner';
 import type { AIMode } from './ModeTag';
@@ -175,6 +181,22 @@ function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage
   };
 }
 
+function makeOptimisticSlashCommandMessage(
+  text: string,
+  extra?: Partial<TranscriptViewMessage>
+): TranscriptViewMessage {
+  return {
+    id: nextOptimisticId(),
+    sequence: -1,
+    createdAt: new Date(),
+    type: 'system_message',
+    text,
+    subagentId: null,
+    systemMessage: { systemType: 'slash_command' },
+    ...extra,
+  };
+}
+
 function summarizeTeammates(
   teammates: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined
 ): string {
@@ -201,6 +223,182 @@ function makeOptimisticUserMessage(
     mode,
     attachments,
   };
+}
+
+const CODEX_PROVIDER_IDS = new Set(['openai-codex', 'openai-codex-acp']);
+const CODEX_SLASH_COMMAND_CONFLICTS = new Set([
+  'clear',
+  'implement',
+  'nimbalyst-planning:implement',
+  'plan',
+  'planning:implement',
+]);
+
+interface ParsedCodexSlashCommand {
+  name: string;
+  args: string;
+}
+
+type CodexSlashCommandAction =
+  | { kind: 'local'; name: string; args: string }
+  | { kind: 'provider'; name: string; args: string }
+  | { kind: 'prompt'; name: string; args: string; prompt: string }
+  | { kind: 'unsupported'; name: string };
+
+function isCodexProvider(provider?: string | null): boolean {
+  return provider != null && CODEX_PROVIDER_IDS.has(provider);
+}
+
+function supportsProviderCodexSlashCommands(provider?: string | null): boolean {
+  return provider === 'openai-codex';
+}
+
+function getSupportedCodexSlashCommandsText(provider?: string | null): string {
+  return getNimbalystCodexSlashCommandNamesForProvider(provider)
+    .map(name => `/${name}`)
+    .join(', ');
+}
+
+function parseLeadingSlashCommand(message: string): ParsedCodexSlashCommand | null {
+  const match = message.match(/^\/([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+
+  const name = match[1].toLowerCase();
+  if (CODEX_SLASH_COMMAND_CONFLICTS.has(name)) {
+    return null;
+  }
+
+  return {
+    name,
+    args: match[2]?.trim() ?? '',
+  };
+}
+
+function resolveCodexSlashCommandAction(
+  message: string,
+  provider?: string | null
+): CodexSlashCommandAction | null {
+  const parsed = parseLeadingSlashCommand(message);
+  if (!parsed) return null;
+
+  const definition = getNimbalystCodexSlashCommandDefinition(parsed.name);
+  if (definition) {
+    if (definition.execution === 'prompt') {
+      const prompt = buildCodexSlashCommandPrompt(parsed.name, parsed.args);
+      if (prompt) {
+        return { kind: 'prompt', name: parsed.name, args: parsed.args, prompt };
+      }
+    }
+    if (definition.execution === 'provider') {
+      if (supportsProviderCodexSlashCommands(provider)) {
+        return { kind: 'provider', name: parsed.name, args: parsed.args };
+      }
+      return { kind: 'unsupported', name: parsed.name };
+    }
+    if (definition.execution === 'local') {
+      return { kind: 'local', name: parsed.name, args: parsed.args };
+    }
+  }
+
+  if (isKnownCodexCliSlashCommand(parsed.name)) {
+    return { kind: 'unsupported', name: parsed.name };
+  }
+
+  return null;
+}
+
+function formatStatusCounts(statuses: Array<{ status?: string }>): string {
+  const counts = new Map<string, number>();
+  for (const status of statuses) {
+    const key = status.status || 'changed';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([status, count]) => `${count} ${status}`)
+    .join(', ');
+}
+
+function normalizeWorkspaceRelativePath(filePath: string, workspacePath: string): string {
+  const normalizedFile = filePath.replace(/\\/g, '/');
+  const normalizedWorkspace = workspacePath.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (normalizedFile === normalizedWorkspace) {
+    return '.';
+  }
+  if (normalizedFile.startsWith(`${normalizedWorkspace}/`)) {
+    return normalizedFile.slice(normalizedWorkspace.length + 1);
+  }
+  return normalizedFile;
+}
+
+function formatFileStatusLine(
+  status: { filePath?: string; status?: string; gitStatusCode?: string },
+  workspacePath: string
+): string {
+  const label = status.gitStatusCode || status.status || 'changed';
+  const path = normalizeWorkspaceRelativePath(status.filePath || '', workspacePath);
+  return `- ${label} ${path}`;
+}
+
+async function buildCodexDiffMessage(workspacePath: string): Promise<string> {
+  if (!workspacePath) {
+    return 'Codex diff\n\nNo workspace is attached to this session.';
+  }
+
+  const [gitStatus, fileStatusResult] = await Promise.all([
+    window.electronAPI.invoke('git:status', workspacePath) as Promise<{
+      branch?: string;
+      ahead?: number;
+      behind?: number;
+      hasUncommitted?: boolean;
+    }>,
+    window.electronAPI.invoke('git:get-all-file-statuses', workspacePath) as Promise<{
+      success?: boolean;
+      error?: string;
+      statuses?: Record<string, { filePath?: string; status?: string; gitStatusCode?: string }>;
+    }>,
+  ]);
+
+  if (fileStatusResult?.success === false) {
+    return `Codex diff\n\nFailed to read Git status: ${fileStatusResult.error || 'Unknown error'}`;
+  }
+
+  const changedStatuses = Object.values(fileStatusResult?.statuses ?? {})
+    .filter(status => status.status && status.status !== 'unchanged')
+    .sort((a, b) => (a.filePath || '').localeCompare(b.filePath || ''));
+
+  const branchParts = [
+    gitStatus?.branch ? `branch ${gitStatus.branch}` : 'unknown branch',
+    typeof gitStatus?.ahead === 'number' && gitStatus.ahead > 0 ? `${gitStatus.ahead} ahead` : null,
+    typeof gitStatus?.behind === 'number' && gitStatus.behind > 0 ? `${gitStatus.behind} behind` : null,
+  ].filter(Boolean);
+
+  if (changedStatuses.length === 0) {
+    return [
+      'Codex diff',
+      '',
+      `Git: ${branchParts.join(', ')}`,
+      'Working tree clean.',
+    ].join('\n');
+  }
+
+  const shownStatuses = changedStatuses.slice(0, 40);
+  const omittedCount = changedStatuses.length - shownStatuses.length;
+  const lines = [
+    'Codex diff',
+    '',
+    `Git: ${branchParts.join(', ')}`,
+    `Changed files: ${changedStatuses.length} (${formatStatusCounts(changedStatuses)})`,
+    '',
+    ...shownStatuses.map(status => formatFileStatusLine(status, workspacePath)),
+  ];
+
+  if (omittedCount > 0) {
+    lines.push(`... ${omittedCount} more files not shown`);
+  }
+
+  return lines.join('\n');
 }
 
 interface Todo {
@@ -1106,6 +1304,102 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
   }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, queuedPrompts, clearAIInputHistory]);
 
+  const appendCodexSlashCommandResult = useCallback((
+    originalMessage: string,
+    resultText: string,
+    overrideMode: AIMode | string | undefined,
+    attachments: ChatAttachment[] = [],
+  ) => {
+    setLastSubmitAt(Date.now());
+    setDraftInput('');
+    setDraftAttachments([]);
+    clearAIInputHistory(sessionId);
+    resetHistory(sessionId);
+
+    const userMessage = makeOptimisticUserMessage(
+      originalMessage,
+      overrideMode as 'agent' | 'planning' | undefined,
+      attachments.length > 0 ? attachments : undefined,
+    );
+    const slashCommandMessage = makeOptimisticSlashCommandMessage(resultText);
+    updateSessionStore({
+      sessionId,
+      updates: {
+        messages: [...messages, userMessage, slashCommandMessage],
+      },
+    });
+  }, [
+    clearAIInputHistory,
+    messages,
+    resetHistory,
+    sessionId,
+    setDraftAttachments,
+    setDraftInput,
+    setLastSubmitAt,
+    updateSessionStore,
+  ]);
+
+  const handleLocalCodexSlashCommand = useCallback(async (
+    action: Extract<CodexSlashCommandAction, { kind: 'local' | 'provider' | 'unsupported' }>,
+    originalMessage: string,
+    overrideMode: AIMode | string | undefined,
+    attachments: ChatAttachment[] = [],
+  ): Promise<void> => {
+    if (action.kind === 'unsupported') {
+      appendCodexSlashCommandResult(
+        originalMessage,
+        `/${action.name} is a Codex CLI command that is not available in this Nimbalyst Codex session yet.\n\nSupported Codex commands in Nim: ${getSupportedCodexSlashCommandsText(provider)}`,
+        overrideMode,
+        attachments,
+      );
+      return;
+    }
+
+    try {
+      let resultText: string;
+      if (action.kind === 'provider') {
+        const effectiveContext = await getEffectiveDocumentContext();
+        const result = await window.electronAPI.invoke('ai:runProviderSlashCommand', {
+          sessionId,
+          workspacePath,
+          command: action.name,
+          args: action.args,
+          documentContext: serializeDocumentContext(effectiveContext),
+        }) as { success?: boolean; content?: string; error?: string };
+        if (!result?.success || !result.content) {
+          throw new Error(result?.error || `/${action.name} returned no output`);
+        }
+        if (action.name === 'usage' || action.name === 'status') {
+          void refreshCodexUsage();
+        }
+        resultText = result.content;
+      } else {
+        resultText = await buildCodexDiffMessage(workspacePath);
+      }
+
+      appendCodexSlashCommandResult(
+        originalMessage,
+        resultText,
+        overrideMode,
+        attachments,
+      );
+    } catch (error) {
+      appendCodexSlashCommandResult(
+        originalMessage,
+        `/${action.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        overrideMode,
+        attachments,
+      );
+    }
+  }, [
+    appendCodexSlashCommandResult,
+    getEffectiveDocumentContext,
+    provider,
+    refreshCodexUsage,
+    sessionId,
+    workspacePath,
+  ]);
+
   const handleSend = useCallback(async () => {
     // Read draft state imperatively — we deliberately don't subscribe to
     // these atoms in SessionTranscript (see SessionAIInput).
@@ -1169,13 +1463,24 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       return;
     }
 
+    const trimmedDraftInput = currentDraftInput.trim();
+    const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+
     if (isLoading) {
-      handleQueue(currentDraftInput.trim());
+      const codexAction = isCodexProvider(provider)
+        ? resolveCodexSlashCommandAction(trimmedDraftInput, provider)
+        : null;
+
+      if (codexAction?.kind === 'local' || codexAction?.kind === 'provider' || codexAction?.kind === 'unsupported') {
+        await handleLocalCodexSlashCommand(codexAction, trimmedDraftInput, aiMode, attachments);
+        return;
+      }
+
+      handleQueue(codexAction?.kind === 'prompt' ? codexAction.prompt : trimmedDraftInput);
       return;
     }
 
-    let message = currentDraftInput.trim();
-    const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+    let message = trimmedDraftInput;
 
     // Intercept /plan command - strip it and switch to planning mode
     // Match "/plan" only when followed by whitespace or end of string (not "/planning" or "/planify")
@@ -1250,6 +1555,17 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       return; // Don't send the /clear message to the AI
     }
 
+    const codexAction = isCodexProvider(provider)
+      ? resolveCodexSlashCommandAction(message, provider)
+      : null;
+    if (codexAction?.kind === 'local' || codexAction?.kind === 'provider' || codexAction?.kind === 'unsupported') {
+      await handleLocalCodexSlashCommand(codexAction, message, overrideMode, attachments);
+      return;
+    }
+    if (codexAction?.kind === 'prompt') {
+      message = codexAction.prompt;
+    }
+
     // Expand @@[name](shortId) -> @@[name](fullUuid) for agent consumption
     const sessionRegistry = store.get(sessionRegistryAtom);
     message = expandSessionMentions(message, sessionRegistry);
@@ -1308,7 +1624,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity, handleLocalCodexSlashCommand]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1412,6 +1728,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     if (!sessionData) return;
 
     const message = '/compact';
+    if (isCodexProvider(provider)) {
+      await handleLocalCodexSlashCommand({ kind: 'unsupported', name: 'compact' }, message, aiMode);
+      return;
+    }
+
     const userMessage = makeOptimisticUserMessage(
       message,
       aiMode as 'agent' | 'planning' | undefined,
@@ -1436,7 +1757,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } catch (error) {
       console.error('[SessionTranscript] Failed to send /compact command:', error);
     }
-  }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore]);
+  }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore, provider, handleLocalCodexSlashCommand]);
 
   const handleTodoClick = useCallback((todo: TodoItem) => {
     onTodoClick?.(todo);

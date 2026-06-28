@@ -1272,6 +1272,132 @@ describe('OpenAICodexProvider', () => {
     });
   });
 
+  it('runs /status and /usage through the app-server status snapshot', async () => {
+    const protocolSession = {
+      id: 'thread-status',
+      platform: 'codex-app-server',
+      raw: { fake: true },
+    };
+    const createSession = vi.fn(async () => protocolSession);
+    const getStatusSnapshot = vi.fn(async () => ({
+      initResponse: {
+        userAgent: 'nimbalyst/0.136.0 (Windows 10.0.26200; x86_64)',
+        codexHome: 'C:\\Users\\tester\\.codex',
+        platformFamily: 'windows',
+        platformOs: 'windows',
+      },
+      threadStartResponse: {
+        thread: {
+          id: 'thread-status',
+          sessionId: 'thread-status',
+          cwd: process.cwd(),
+          cliVersion: '0.136.0',
+        },
+        model: 'gpt-5.5',
+        cwd: process.cwd(),
+        instructionSources: [path.join(process.cwd(), 'AGENTS.md')],
+        approvalPolicy: 'never',
+        sandbox: { type: 'dangerFullAccess' },
+        reasoningEffort: 'xhigh',
+      },
+      accountResponse: {
+        account: {
+          type: 'chatgpt',
+          email: 'tester@example.com',
+          planType: 'plus',
+        },
+      },
+      rateLimitsResponse: {
+        rateLimitsByLimitId: {
+          codex: {
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1782587965 },
+            secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: 1783138758 },
+          },
+        },
+      },
+      configResponse: {
+        config: {
+          model_reasoning_summary: null,
+        },
+      },
+      tokenUsage: {
+        total: { totalTokens: 1000, inputTokens: 800, outputTokens: 200 },
+        modelContextWindow: 100000,
+      },
+      workspacePath: process.cwd(),
+    }));
+    const protocol = {
+      platform: 'codex-app-server',
+      createSession,
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+      getStatusSnapshot,
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol },
+    );
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5.5', effortLevel: 'xhigh' });
+
+    const providerSessionReceived = vi.fn();
+    provider.on('session:providerSessionReceived', providerSessionReceived);
+    const usageSnapshots: any[] = [];
+    provider.on('codexUsageSnapshot', (event) => usageSnapshots.push(event));
+
+    const result = await provider.runSlashCommand({
+      command: '/status',
+      sessionId: 'nim-session-status',
+      workspacePath: process.cwd(),
+    });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(getStatusSnapshot).toHaveBeenCalledWith(protocolSession);
+    expect(result.providerSessionId).toBe('thread-status');
+    expect(result.content).toContain('> OpenAI Codex (v0.136.0)');
+    expect(result.content).toContain('Model:');
+    expect(result.content).toContain('gpt-5.5 (reasoning xhigh, summaries auto)');
+    expect(result.content).toContain('Permissions:');
+    expect(result.content).toContain('Full Access');
+    expect(result.content).toContain('Account:');
+    expect(result.content).toContain('tester@example.com (Plus)');
+    expect(providerSessionReceived).toHaveBeenCalledWith({
+      sessionId: 'nim-session-status',
+      providerSessionId: 'thread-status',
+    });
+    expect(usageSnapshots).toHaveLength(1);
+    expect(usageSnapshots[0]).toMatchObject({
+      sessionId: 'nim-session-status',
+      workspacePath: process.cwd(),
+      snapshot: {
+        rateLimitsResponse: {
+          rateLimitsByLimitId: {
+            codex: {
+              primary: { usedPercent: 25 },
+              secondary: { usedPercent: 10 },
+            },
+          },
+        },
+      },
+    });
+
+    const usageResult = await provider.runSlashCommand({
+      command: '/usage',
+      sessionId: 'nim-session-status',
+      workspacePath: process.cwd(),
+    });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(getStatusSnapshot).toHaveBeenCalledTimes(2);
+    expect(usageResult.providerSessionId).toBe('thread-status');
+    expect(usageResult.content).toContain('Context window:');
+    expect(usageResult.content).toContain('5h limit:');
+    expect(usageSnapshots).toHaveLength(2);
+  });
+
   it('reuses the same live ProtocolSession across consecutive turns on one Nimbalyst session', async () => {
     // Mock protocol -- the cache lives at the provider layer, so we want to
     // pin down its create/resume/reuse behavior without depending on the SDK

@@ -125,9 +125,9 @@ function deriveSkillFallbackName(filePath: string, relativePath?: string): strin
     return path.basename(path.dirname(filePath)).trim();
   }
 
-  const segments = relativePath
+  const normalizedRelativePath = relativePath.replace(/\\/g, '/');
+  const segments = normalizedRelativePath
     .replace(/\/SKILL\.md$/i, '')
-    .replace(/\\/g, '/')
     .split('/')
     .map(segment => segment.trim())
     .filter(Boolean);

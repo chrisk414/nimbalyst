@@ -2,9 +2,15 @@ import path from 'path';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 import { BaseAgentProvider } from './BaseAgentProvider';
+import type { ProviderSlashCommandOptions, ProviderSlashCommandResult } from '../AIProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
 import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
+import {
+  getNimbalystCodexSlashCommandDefinition,
+  getNimbalystCodexSlashCommandNames,
+  normalizeCodexSlashCommandName,
+} from '../../codexSlashCommands';
 import { AIToolCall, AIToolResult } from '../../types';
 import {
   ProviderConfig,
@@ -17,7 +23,7 @@ import {
   ChatAttachment,
 } from '../types';
 import { CodexSDKProtocol } from '../protocols/CodexSDKProtocol';
-import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
+import { CodexAppServerProtocol, type CodexAppServerHostBindings, type CodexAppServerStatusSnapshot } from '../protocols/CodexAppServerProtocol';
 import { AgentProtocol, ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
@@ -53,6 +59,7 @@ export type CodexTransport = 'sdk' | 'app-server';
  */
 export interface CodexProtocol extends AgentProtocol {
   setApiKey?(apiKey: string): void;
+  getStatusSnapshot?(session: ProtocolSession): Promise<CodexAppServerStatusSnapshot>;
 }
 
 interface OpenAICodexProviderDeps {
@@ -81,6 +88,231 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'turn/failed',
   'error',
 ]);
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function titleCasePlan(plan: string | undefined): string | undefined {
+  if (!plan) return undefined;
+  return plan
+    .split(/[_-]+/g)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatCodexVersion(snapshot: CodexAppServerStatusSnapshot): string {
+  const start = asRecord(snapshot.threadStartResponse);
+  const thread = asRecord(start?.thread) ?? asRecord(asRecord(snapshot.threadReadResponse)?.thread);
+  const cliVersion = asString(thread?.cliVersion);
+  if (cliVersion) return cliVersion.startsWith('v') ? cliVersion : `v${cliVersion}`;
+
+  const userAgent = snapshot.initResponse.userAgent;
+  const match = userAgent.match(/\/(\d+\.\d+\.\d+)/);
+  return match ? `v${match[1]}` : 'version unknown';
+}
+
+function formatInstructionSources(value: unknown, cwd: string): string {
+  if (!Array.isArray(value) || value.length === 0) return 'none';
+  const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  return value
+    .map(source => asString(source))
+    .filter((source): source is string => !!source)
+    .map(source => {
+      const normalized = source.replace(/\\/g, '/');
+      if (normalized.startsWith(`${normalizedCwd}/`)) {
+        return normalized.slice(normalizedCwd.length + 1).replace(/\//g, path.sep);
+      }
+      return path.basename(source);
+    })
+    .join(', ');
+}
+
+function formatSandbox(value: unknown, approvalPolicy: string | undefined): string {
+  const sandbox = asRecord(value);
+  const rawType = asString(sandbox?.type) ?? asString(value);
+  const normalized = rawType?.replace(/[-_\s]/g, '').toLowerCase();
+  let label = rawType ?? 'unknown';
+  if (normalized === 'dangerfullaccess') label = 'Full Access';
+  else if (normalized === 'workspacewrite') label = 'Workspace Write';
+  else if (normalized === 'readonly') label = 'Read Only';
+
+  if (approvalPolicy && approvalPolicy !== 'never') {
+    return `${label} (approval ${approvalPolicy})`;
+  }
+  return label;
+}
+
+function formatAccount(accountResponse: unknown): string {
+  const account = asRecord(asRecord(accountResponse)?.account);
+  const type = asString(account?.type);
+  if (!account || !type) return 'not signed in';
+  if (type === 'chatgpt') {
+    const email = asString(account.email) ?? 'ChatGPT';
+    const plan = titleCasePlan(asString(account.planType));
+    return plan ? `${email} (${plan})` : email;
+  }
+  if (type === 'apiKey') return 'API key';
+  if (type === 'amazonBedrock') return 'Amazon Bedrock';
+  return type;
+}
+
+function formatCompactTokens(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return `${value}`;
+}
+
+function formatContextWindow(snapshot: CodexAppServerStatusSnapshot): string {
+  const tokenUsage = asRecord(snapshot.tokenUsage);
+  const total = asRecord(tokenUsage?.total);
+  const used = asNumber(total?.totalTokens)
+    ?? asNumber(tokenUsage?.totalTokens)
+    ?? asNumber(tokenUsage?.total_tokens);
+  const windowSize = asNumber(tokenUsage?.modelContextWindow)
+    ?? asNumber(asRecord(asRecord(snapshot.configResponse)?.config)?.model_context_window);
+
+  if (used === undefined || windowSize === undefined || windowSize <= 0) {
+    return 'no token usage reported yet';
+  }
+
+  const leftPercent = Math.max(0, Math.min(100, Math.round(((windowSize - used) / windowSize) * 100)));
+  return `${leftPercent}% left (${formatCompactTokens(used)} used / ${formatCompactTokens(windowSize)})`;
+}
+
+function formatTimeReset(seconds: number | undefined): string {
+  if (seconds === undefined) return '';
+  const date = new Date(seconds * 1000);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+  const now = new Date();
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return ` (resets ${time})`;
+  }
+
+  const day = date.getDate();
+  const month = new Intl.DateTimeFormat(undefined, { month: 'short' }).format(date);
+  return ` (resets ${time} on ${day} ${month})`;
+}
+
+function formatRateLimitBar(leftPercent: number): string {
+  const width = 18;
+  const filled = Math.round((Math.max(0, Math.min(100, leftPercent)) / 100) * width);
+  return `[${'#'.repeat(filled)}${' '.repeat(width - filled)}]`;
+}
+
+function formatRateLimitLabel(windowDurationMins: number | undefined): string {
+  if (windowDurationMins === 300) return '5h limit:';
+  if (windowDurationMins === 10080) return 'Weekly limit:';
+  if (windowDurationMins && windowDurationMins % 60 === 0) return `${windowDurationMins / 60}h limit:`;
+  return windowDurationMins ? `${windowDurationMins}m limit:` : 'Limit:';
+}
+
+function formatRateLimitWindow(windowValue: unknown): [string, string] | null {
+  const windowRecord = asRecord(windowValue);
+  if (!windowRecord) return null;
+  const usedPercent = asNumber(windowRecord.usedPercent);
+  if (usedPercent === undefined) return null;
+  const leftPercent = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+  const duration = asNumber(windowRecord.windowDurationMins);
+  const resetsAt = asNumber(windowRecord.resetsAt);
+  return [
+    formatRateLimitLabel(duration),
+    `${formatRateLimitBar(leftPercent)} ${leftPercent}% left${formatTimeReset(resetsAt)}`,
+  ];
+}
+
+function formatRateLimitRows(rateLimitsResponse: unknown): Array<[string, string]> {
+  const root = asRecord(rateLimitsResponse);
+  if (!root) return [];
+
+  const byId = asRecord(root.rateLimitsByLimitId);
+  const entries = byId
+    ? Object.entries(byId).filter((entry): entry is [string, Record<string, unknown>] => !!asRecord(entry[1])) as Array<[string, Record<string, unknown>]>
+    : [['codex', asRecord(root.rateLimits) ?? {}] as [string, Record<string, unknown>]];
+
+  const ordered = [
+    ...entries.filter(([key]) => key === 'codex'),
+    ...entries.filter(([key]) => key !== 'codex'),
+  ];
+
+  const rows: Array<[string, string]> = [];
+  for (const [key, snapshot] of ordered) {
+    const name = asString(snapshot.limitName);
+    if (key !== 'codex' && name) {
+      rows.push([`${name} limit:`, '']);
+    }
+
+    const primary = formatRateLimitWindow(snapshot.primary);
+    const secondary = formatRateLimitWindow(snapshot.secondary);
+    if (primary) rows.push(primary);
+    if (secondary) rows.push(secondary);
+  }
+  return rows;
+}
+
+function formatCodexStatusSnapshot(snapshot: CodexAppServerStatusSnapshot, command = 'status'): string {
+  const start = asRecord(snapshot.threadStartResponse);
+  const thread = asRecord(start?.thread) ?? asRecord(asRecord(snapshot.threadReadResponse)?.thread);
+  const config = asRecord(asRecord(snapshot.configResponse)?.config);
+  const model = asString(start?.model) ?? asString(config?.model) ?? 'default';
+  const effort = asString(start?.reasoningEffort) ?? asString(config?.model_reasoning_effort);
+  const summary = asString(config?.model_reasoning_summary) ?? 'auto';
+  const modelDetails = effort ? ` (reasoning ${effort}, summaries ${summary})` : '';
+  const cwd = asString(start?.cwd) ?? asString(thread?.cwd) ?? snapshot.workspacePath;
+  const approvalPolicy = asString(start?.approvalPolicy) ?? asString(config?.approval_policy);
+  const sandbox = start?.sandbox ?? config?.sandbox_mode;
+  const sessionId = asString(thread?.sessionId) ?? asString(thread?.id) ?? 'unknown';
+  const collaborationMode = asString(start?.collaborationMode) ?? asString(config?.collaboration_mode) ?? 'Default';
+
+  const rows: Array<[string, string]> = [
+    ['Model:', `${model}${modelDetails}`],
+    ['Directory:', cwd],
+    ['Permissions:', formatSandbox(sandbox, approvalPolicy)],
+    ['Agents.md:', formatInstructionSources(start?.instructionSources, cwd)],
+    ['Account:', formatAccount(snapshot.accountResponse)],
+    ['Collaboration mode:', collaborationMode],
+    ['Session:', sessionId],
+    ['Context window:', formatContextWindow(snapshot)],
+    ...formatRateLimitRows(snapshot.rateLimitsResponse),
+  ];
+
+  const labelWidth = Math.max(...rows.map(([label]) => label.length), 1) + 1;
+  const lines = [
+    `> OpenAI Codex (${formatCodexVersion(snapshot)})`,
+    '',
+    'Visit https://chatgpt.com/codex/settings/usage for up-to-date',
+    'information on rate limits and credits.',
+    '',
+    ...rows.map(([label, value]) => value ? `${label.padEnd(labelWidth)}${value}` : label),
+  ];
+
+  if (snapshot.rateLimitsResponse) {
+    lines.push('Warning:'.padEnd(labelWidth) + `limits may be stale - run /${command} again shortly.`);
+  }
+
+  return lines.join('\n');
+}
 
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
@@ -122,14 +354,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private static readonly MODEL_ID_CACHE_DURATION_MS = 5 * 60 * 1000;
   private static readonly MODEL_ID_CACHE_MAX_SIZE = 100;
   private static readonly MODEL_ID_CACHE = new Map<string, { fetchedAt: number; ids: Set<string> }>();
-  private static readonly KNOWN_SLASH_COMMANDS: ReadonlyArray<string> = [
-    'compact',
-    'diff',
-    'init',
-    'mcp',
-    'review',
-    'status',
-  ];
+  private static readonly KNOWN_SLASH_COMMANDS: ReadonlyArray<string> = getNimbalystCodexSlashCommandNames();
 
   private readonly protocol: CodexProtocol;
   private readonly transport: CodexTransport;
@@ -815,6 +1040,32 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     return OpenAICodexProvider.getKnownSlashCommands();
   }
 
+  async runSlashCommand(options: ProviderSlashCommandOptions): Promise<ProviderSlashCommandResult> {
+    const command = normalizeCodexSlashCommandName(options.command);
+    const definition = getNimbalystCodexSlashCommandDefinition(command);
+    if (definition?.execution !== 'provider') {
+      throw new Error(`Codex slash command /${command} is not provider-executed`);
+    }
+    if (command !== 'status' && command !== 'usage') {
+      throw new Error(`Codex slash command /${command} has no provider implementation`);
+    }
+    if (!options.workspacePath) {
+      throw new Error(`[OpenAICodexProvider] workspacePath is required for /${command}`);
+    }
+    if (!this.protocol.getStatusSnapshot) {
+      throw new Error(`Codex /${command} requires the app-server transport`);
+    }
+
+    const session = await this.getOrCreateProtocolSessionForSlashCommand(options);
+    const snapshot = await this.protocol.getStatusSnapshot(session);
+    this.emitCodexUsageSnapshot(options.sessionId, options.workspacePath, snapshot);
+    return {
+      content: formatCodexStatusSnapshot(snapshot, command),
+      providerSessionId: session.id,
+      codexStatusSnapshot: snapshot,
+    };
+  }
+
   getProviderSessionData(sessionId: string): any {
     const { providerSessionId } = this.sessions.getProviderSessionData(sessionId);
     return {
@@ -1285,6 +1536,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // Capture session ID after stream completes as a safety net for older
       // call paths. New threads are now persisted immediately after
       // createSession() succeeds so blocked turns survive restart.
+      await this.refreshCodexUsageSnapshot(sessionId, workspacePath, session);
+
       if (sessionId && session.id) {
         if (session.id !== existingSessionId) {
           // console.log('[CODEX] Saving new thread ID:', {
@@ -1327,6 +1580,123 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         this.abortController = null;
       }
     }
+  }
+
+  private async getOrCreateProtocolSessionForSlashCommand(
+    options: ProviderSlashCommandOptions
+  ): Promise<ProtocolSession> {
+    const cachedLiveSession = this.liveProtocolSessions.get(options.sessionId);
+    if (cachedLiveSession) {
+      return cachedLiveSession;
+    }
+
+    const existingSessionId = this.sessions.getSessionId(options.sessionId);
+    const sessionOptions = await this.buildSlashCommandSessionOptions(options);
+    const session = existingSessionId
+      ? await this.protocol.resumeSession(existingSessionId, sessionOptions)
+      : await this.protocol.createSession(sessionOptions);
+
+    if (session.id) {
+      if (existingSessionId && session.id !== existingSessionId) {
+        throw new Error(
+          `[CODEX] Thread resume mismatch: requested resume of ` +
+          `"${existingSessionId}" but protocol returned thread "${session.id}".`
+        );
+      }
+      this.liveProtocolSessions.set(options.sessionId, session);
+      if (!existingSessionId) {
+        this.sessions.captureSessionId(options.sessionId, session.id);
+      }
+    }
+
+    return session;
+  }
+
+  private emitCodexUsageSnapshot(
+    sessionId: string | undefined,
+    workspacePath: string | undefined,
+    snapshot: CodexAppServerStatusSnapshot
+  ): void {
+    this.emit('codexUsageSnapshot', {
+      sessionId,
+      workspacePath,
+      snapshot,
+    });
+  }
+
+  private async refreshCodexUsageSnapshot(
+    sessionId: string | undefined,
+    workspacePath: string | undefined,
+    session: ProtocolSession
+  ): Promise<void> {
+    if (!this.protocol.getStatusSnapshot) {
+      return;
+    }
+
+    try {
+      const snapshot = await this.protocol.getStatusSnapshot(session);
+      this.emitCodexUsageSnapshot(sessionId, workspacePath, snapshot);
+    } catch (error) {
+      console.warn('[CODEX] Failed to refresh usage snapshot:', error);
+    }
+  }
+
+  private async buildSlashCommandSessionOptions(
+    options: ProviderSlashCommandOptions
+  ): Promise<Parameters<CodexProtocol['createSession']>[0]> {
+    const agentRole = await this.getAgentRole(options.sessionId);
+    const isMetaAgent = agentRole === 'meta-agent';
+    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(options.sessionId) : 'default';
+    const systemPrompt = this.buildSystemPrompt(options.documentContext, isMetaAgent, workflowPreset);
+    const mcpServers = await this.mcpConfigService.getMcpServersConfig({
+      sessionId: options.sessionId,
+      workspacePath: options.workspacePath,
+      profile: isMetaAgent ? 'meta-agent' : 'standard',
+    });
+
+    let codexEnv = OpenAICodexProvider.buildCodexEnvironment();
+    const sidecarDir = OpenAICodexProvider.preEditSidecarDirResolver?.(options.sessionId);
+    if (sidecarDir) {
+      const baseEnv: Record<string, string> = codexEnv ? { ...codexEnv } : {};
+      if (!codexEnv) {
+        for (const [key, value] of Object.entries(process.env)) {
+          if (value !== undefined) {
+            baseEnv[key] = value;
+          }
+        }
+      }
+      baseEnv.NIMBALYST_PRE_EDIT_DIR = sidecarDir;
+      baseEnv.ELECTRON_RUN_AS_NODE = '1';
+      codexEnv = baseEnv;
+    }
+
+    const additionalDirectories = OpenAICodexProvider.additionalDirectoriesLoader
+      ? OpenAICodexProvider.additionalDirectoriesLoader(options.workspacePath)
+      : [];
+    const trustStatus = BaseAgentProvider.trustChecker
+      ? BaseAgentProvider.trustChecker(options.workspacePath)
+      : null;
+    const permissionMode = trustStatus?.mode === 'bypass-all' || trustStatus?.mode === 'allow-all'
+      ? trustStatus.mode
+      : undefined;
+
+    return {
+      workspacePath: options.workspacePath,
+      model: await this.getConfiguredModel(),
+      ...(permissionMode ? { permissionMode } : {}),
+      mcpServers,
+      ...(isMetaAgent ? {
+        allowedTools: BaseAgentProvider.META_AGENT_ALLOWED_TOOLS,
+        disallowedTools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'Bash', 'WebFetch', 'WebSearch', 'Task', 'Agent'].filter(t => !BaseAgentProvider.META_AGENT_ALLOWED_TOOLS.includes(t)),
+      } : {}),
+      raw: {
+        systemPrompt,
+        codexConfigOverrides: this.buildCodexConfigOverrides(mcpServers),
+        ...(codexEnv ? { codexEnv } : {}),
+        ...(this.config?.effortLevel ? { effortLevel: this.config.effortLevel } : {}),
+        ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+      },
+    };
   }
 
   /**

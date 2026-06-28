@@ -28,6 +28,7 @@ export interface CodexUsageData {
   tokenUsage?: {
     totalTokens: number;
     lastTokens: number | null;
+    contextWindow?: number | null;
   };
   limitsAvailable?: boolean;
   lastUpdated: number; // Unix timestamp
@@ -58,20 +59,35 @@ export const codexUsageAvailableAtom = atom((get) => {
   return hasUsageData || hasCreditsData || hasTokenUsage;
 });
 
+export function getCodexContextUsagePercent(usage: CodexUsageData | null | undefined): number | null {
+  const totalTokens = usage?.tokenUsage?.totalTokens;
+  const contextWindow = usage?.tokenUsage?.contextWindow;
+  if (typeof totalTokens !== 'number' || typeof contextWindow !== 'number' || contextWindow <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, (totalTokens / contextWindow) * 100));
+}
+
+export function getUsageColor(utilization: number): 'green' | 'yellow' | 'red' {
+  if (utilization >= 80) return 'red';
+  if (utilization >= 50) return 'yellow';
+  return 'green';
+}
+
+export function formatCompactTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return `${value}`;
+}
+
 export const codexUsageSessionColorAtom = atom((get) => {
   const usage = get(codexUsageAtom);
   if (!usage) return 'muted';
-  const util = usage.fiveHour.utilization;
-  if (util >= 80) return 'red';
-  if (util >= 50) return 'yellow';
-  return 'green';
+  return getUsageColor(usage.fiveHour.utilization);
 });
 
 export const codexUsageWeeklyColorAtom = atom((get) => {
   const usage = get(codexUsageAtom);
   if (!usage) return 'muted';
-  const util = usage.sevenDay.utilization;
-  if (util >= 80) return 'red';
-  if (util >= 50) return 'yellow';
-  return 'green';
+  return getUsageColor(usage.sevenDay.utilization);
 });

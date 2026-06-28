@@ -414,7 +414,7 @@ const PermissionDeniedCard: React.FC<{
 const SystemReminderCard: React.FC<{
   message: TranscriptViewMessage;
 }> = ({ message }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(message.systemMessage?.systemType === 'slash_command');
 
   const content = (message.text ?? '')
     .replace(/^\s*<SYSTEM_REMINDER>/, '')
@@ -432,7 +432,8 @@ const SystemReminderCard: React.FC<{
       ? (message.metadata.reminderKind as string)
       : undefined);
   const label =
-    (reminderKind && REMINDER_KIND_LABELS[reminderKind]) ?? 'System Reminder';
+    (reminderKind && REMINDER_KIND_LABELS[reminderKind]) ??
+    (message.systemMessage?.systemType === 'slash_command' ? 'Slash command' : 'System Reminder');
 
   return (
     <div className="rich-transcript-system-reminder ml-6 mb-2 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-3 py-2">
@@ -454,7 +455,7 @@ const SystemReminderCard: React.FC<{
         </span>
       </button>
       {isExpanded && (
-        <p className="m-0 mt-2 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-normal break-words">
+        <p className="m-0 mt-2 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-pre-wrap break-words">
           {content}
         </p>
       )}

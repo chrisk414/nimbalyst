@@ -64,7 +64,7 @@ export async function handleExtensionTool(
   }
 
   const targetWindow = BrowserWindow.fromId(windowId);
-  if (!targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
     return {
       content: [{ type: "text", text: `Error: Window no longer exists` }],
       isError: true,

@@ -191,7 +191,17 @@ export interface TurnFailedNotification {
 
 export interface ThreadTokenUsageUpdatedNotification {
   threadId: string;
-  usage: TokenUsage;
+  turnId?: string;
+  usage?: TokenUsage;
+  tokenUsage?: TokenUsage;
+}
+
+export interface TokenUsageBreakdown {
+  totalTokens?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
 }
 
 export interface TokenUsage {
@@ -203,6 +213,9 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  total?: TokenUsageBreakdown;
+  last?: TokenUsageBreakdown;
+  modelContextWindow?: number | null;
 }
 
 // ---- Item notifications ----

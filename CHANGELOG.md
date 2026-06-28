@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Codex slash commands in Nim no longer get sent as ordinary prompts; `/status` now displays the Codex-reported session status, supported local commands still run in Nim, unsupported Codex CLI-only commands are no longer advertised, and Codex skill names are normalized correctly on Windows.
 - Cancelling a running AI prompt no longer lets a stale activity update restore a stuck "Thinking..." state.
 
 ### Removed
